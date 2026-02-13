@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 clap-sys = "0.5"
 libloading = "0.8"
+smallvec = "1"
 thiserror = "2"
 
 [dev-dependencies]

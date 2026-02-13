@@ -1,16 +1,17 @@
 //! Common types for CLAP plugin hosting.
 
-/// Audio buffer for plugin processing.
+use smallvec::SmallVec;
+
 pub struct AudioBuffer<'a, T = f32> {
     pub inputs: &'a [&'a [T]],
     pub outputs: &'a mut [&'a mut [T]],
     pub num_samples: usize,
+    pub sample_rate: f64,
 }
 
 pub type AudioBuffer32<'a> = AudioBuffer<'a, f32>;
 pub type AudioBuffer64<'a> = AudioBuffer<'a, f64>;
 
-/// Plugin metadata.
 #[derive(Debug, Clone)]
 pub struct PluginInfo {
     pub id: String,
@@ -50,15 +51,14 @@ impl PluginInfo {
     }
 }
 
-/// Transport state for plugin processing.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TransportInfo {
     pub playing: bool,
     pub recording: bool,
-    pub loop_active: bool,
+    pub cycle_active: bool,
     pub tempo: f64,
-    pub time_sig_numerator: u16,
-    pub time_sig_denominator: u16,
+    pub time_sig_numerator: i32,
+    pub time_sig_denominator: i32,
     pub song_pos_beats: f64,
     pub song_pos_seconds: f64,
     pub loop_start_beats: f64,
@@ -93,13 +93,13 @@ impl TransportInfo {
     }
 
     pub fn with_loop(mut self, active: bool, start: f64, end: f64) -> Self {
-        self.loop_active = active;
+        self.cycle_active = active;
         self.loop_start_beats = start;
         self.loop_end_beats = end;
         self
     }
 
-    pub fn with_time_signature(mut self, numerator: u16, denominator: u16) -> Self {
+    pub fn with_time_signature(mut self, numerator: i32, denominator: i32) -> Self {
         self.time_sig_numerator = numerator;
         self.time_sig_denominator = denominator;
         self
@@ -112,18 +112,13 @@ impl TransportInfo {
     }
 }
 
-/// MIDI event for plugin input.
 #[derive(Debug, Clone, Copy)]
 pub struct MidiEvent {
-    /// Sample offset within the buffer
-    pub sample_offset: u32,
-    /// MIDI channel (0-15)
+    pub sample_offset: i32,
     pub channel: u8,
-    /// Event data
     pub data: MidiData,
 }
 
-/// MIDI event data variants.
 #[derive(Debug, Clone, Copy)]
 pub enum MidiData {
     NoteOn { key: u8, velocity: f64 },
@@ -136,7 +131,7 @@ pub enum MidiData {
 }
 
 impl MidiEvent {
-    pub fn note_on(sample_offset: u32, channel: u8, key: u8, velocity: u8) -> Self {
+    pub fn note_on(sample_offset: i32, channel: u8, key: u8, velocity: u8) -> Self {
         Self {
             sample_offset,
             channel,
@@ -147,7 +142,7 @@ impl MidiEvent {
         }
     }
 
-    pub fn note_off(sample_offset: u32, channel: u8, key: u8, velocity: u8) -> Self {
+    pub fn note_off(sample_offset: i32, channel: u8, key: u8, velocity: u8) -> Self {
         Self {
             sample_offset,
             channel,
@@ -158,7 +153,7 @@ impl MidiEvent {
         }
     }
 
-    pub fn control_change(sample_offset: u32, channel: u8, controller: u8, value: u8) -> Self {
+    pub fn control_change(sample_offset: i32, channel: u8, controller: u8, value: u8) -> Self {
         Self {
             sample_offset,
             channel,
@@ -166,7 +161,7 @@ impl MidiEvent {
         }
     }
 
-    pub fn program_change(sample_offset: u32, channel: u8, program: u8) -> Self {
+    pub fn program_change(sample_offset: i32, channel: u8, program: u8) -> Self {
         Self {
             sample_offset,
             channel,
@@ -174,7 +169,7 @@ impl MidiEvent {
         }
     }
 
-    pub fn pitch_bend(sample_offset: u32, channel: u8, value: u16) -> Self {
+    pub fn pitch_bend(sample_offset: i32, channel: u8, value: u16) -> Self {
         Self {
             sample_offset,
             channel,
@@ -183,15 +178,14 @@ impl MidiEvent {
     }
 }
 
-/// Trait for converting custom MIDI types to CLAP events.
 pub trait ClapMidiEvent {
-    fn sample_offset(&self) -> u32;
+    fn sample_offset(&self) -> i32;
     fn channel(&self) -> u8;
     fn to_midi_data(&self) -> Option<MidiData>;
 }
 
 impl ClapMidiEvent for MidiEvent {
-    fn sample_offset(&self) -> u32 {
+    fn sample_offset(&self) -> i32 {
         self.sample_offset
     }
 
@@ -204,7 +198,6 @@ impl ClapMidiEvent for MidiEvent {
     }
 }
 
-/// Note expression type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteExpressionType {
     Volume,
@@ -216,10 +209,9 @@ pub enum NoteExpressionType {
     Expression,
 }
 
-/// Note expression value.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionValue {
-    pub sample_offset: u32,
+    pub sample_offset: i32,
     pub note_id: i32,
     pub port_index: i16,
     pub channel: i16,
@@ -228,29 +220,27 @@ pub struct NoteExpressionValue {
     pub value: f64,
 }
 
-/// Parameter automation point.
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterPoint {
-    pub sample_offset: u32,
+    pub sample_offset: i32,
     pub value: f64,
 }
 
-/// Parameter automation queue.
 #[derive(Debug, Clone)]
 pub struct ParameterQueue {
     pub param_id: u32,
-    pub points: Vec<ParameterPoint>,
+    pub points: SmallVec<[ParameterPoint; 8]>,
 }
 
 impl ParameterQueue {
     pub fn new(param_id: u32) -> Self {
         Self {
             param_id,
-            points: Vec::new(),
+            points: SmallVec::new(),
         }
     }
 
-    pub fn add_point(&mut self, sample_offset: u32, value: f64) {
+    pub fn add_point(&mut self, sample_offset: i32, value: f64) {
         self.points.push(ParameterPoint {
             sample_offset,
             value,
@@ -258,10 +248,9 @@ impl ParameterQueue {
     }
 }
 
-/// Parameter changes for automation.
 #[derive(Debug, Clone, Default)]
 pub struct ParameterChanges {
-    pub queues: Vec<ParameterQueue>,
+    pub queues: SmallVec<[ParameterQueue; 16]>,
 }
 
 impl ParameterChanges {
@@ -278,7 +267,6 @@ impl ParameterChanges {
     }
 }
 
-/// Parameter flags.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParameterFlags {
     pub is_stepped: bool,
@@ -299,7 +287,6 @@ pub struct ParameterFlags {
     pub requires_process: bool,
 }
 
-/// Parameter information.
 #[derive(Debug, Clone)]
 pub struct ParameterInfo {
     pub id: u32,
@@ -323,4 +310,290 @@ impl ParameterInfo {
             flags: ParameterFlags::default(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioPortInfo {
+    pub id: u32,
+    pub name: String,
+    pub channel_count: u32,
+    pub flags: AudioPortFlags,
+    pub port_type: AudioPortType,
+    pub in_place_pair_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AudioPortFlags {
+    pub is_main: bool,
+    pub supports_64bit: bool,
+    pub prefers_64bit: bool,
+    pub requires_common_sample_size: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioPortType {
+    Mono,
+    Stereo,
+    Custom(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePortInfo {
+    pub id: u32,
+    pub name: String,
+    pub supported_dialects: NoteDialects,
+    pub preferred_dialect: NoteDialect,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoteDialects {
+    pub clap: bool,
+    pub midi: bool,
+    pub midi_mpe: bool,
+    pub midi2: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteDialect {
+    Clap,
+    Midi,
+    MidiMpe,
+    Midi2,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct VoiceInfo {
+    pub voice_count: u32,
+    pub voice_capacity: u32,
+    pub supports_overlapping_notes: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioPortConfig {
+    pub id: u32,
+    pub name: String,
+    pub input_port_count: u32,
+    pub output_port_count: u32,
+    pub has_main_input: bool,
+    pub main_input_channel_count: u32,
+    pub has_main_output: bool,
+    pub main_output_channel_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoteName {
+    pub name: String,
+    pub port: i16,
+    pub channel: i16,
+    pub key: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateContext {
+    ForPreset,
+    ForProject,
+    ForDuplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Color {
+    pub alpha: u8,
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TrackInfo {
+    pub name: Option<String>,
+    pub color: Option<Color>,
+    pub audio_channel_count: Option<i32>,
+    pub audio_port_type: Option<String>,
+    pub is_return_track: bool,
+    pub is_bus: bool,
+    pub is_master: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamAutomationState {
+    None,
+    Present,
+    Playing,
+    Recording,
+    Overriding,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteControlsPage {
+    pub section_name: String,
+    pub page_id: u32,
+    pub page_name: String,
+    pub param_ids: [u32; 8],
+    pub is_for_preset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransportRequest {
+    Start,
+    Stop,
+    Continue,
+    Pause,
+    TogglePlay,
+    Jump {
+        position_beats: f64,
+    },
+    LoopRegion {
+        start_beats: f64,
+        duration_beats: f64,
+    },
+    ToggleLoop,
+    EnableLoop(bool),
+    Record(bool),
+    ToggleRecord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMenuTarget {
+    Global,
+    Param(u32),
+}
+
+#[derive(Debug, Clone)]
+pub enum ContextMenuItem {
+    Entry {
+        label: String,
+        is_enabled: bool,
+        action_id: u32,
+    },
+    CheckEntry {
+        label: String,
+        is_enabled: bool,
+        is_checked: bool,
+        action_id: u32,
+    },
+    Separator,
+    Title {
+        title: String,
+        is_enabled: bool,
+    },
+    BeginSubmenu {
+        label: String,
+        is_enabled: bool,
+    },
+    EndSubmenu,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioPortConfigRequest {
+    pub is_input: bool,
+    pub port_index: u32,
+    pub channel_count: u32,
+    pub port_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmbisonicOrdering {
+    Fuma,
+    Acn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmbisonicNormalization {
+    MaxN,
+    Sn3d,
+    N3d,
+    Sn2d,
+    N2d,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AmbisonicConfig {
+    pub ordering: AmbisonicOrdering,
+    pub normalization: AmbisonicNormalization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SurroundChannel {
+    FrontLeft = 0,
+    FrontRight = 1,
+    FrontCenter = 2,
+    LowFrequency = 3,
+    BackLeft = 4,
+    BackRight = 5,
+    FrontLeftCenter = 6,
+    FrontRightCenter = 7,
+    BackCenter = 8,
+    SideLeft = 9,
+    SideRight = 10,
+    TopCenter = 11,
+    TopFrontLeft = 12,
+    TopFrontCenter = 13,
+    TopFrontRight = 14,
+    TopBackLeft = 15,
+    TopBackCenter = 16,
+    TopBackRight = 17,
+}
+
+impl SurroundChannel {
+    pub fn from_position(pos: u8) -> Option<Self> {
+        match pos {
+            0 => Some(Self::FrontLeft),
+            1 => Some(Self::FrontRight),
+            2 => Some(Self::FrontCenter),
+            3 => Some(Self::LowFrequency),
+            4 => Some(Self::BackLeft),
+            5 => Some(Self::BackRight),
+            6 => Some(Self::FrontLeftCenter),
+            7 => Some(Self::FrontRightCenter),
+            8 => Some(Self::BackCenter),
+            9 => Some(Self::SideLeft),
+            10 => Some(Self::SideRight),
+            11 => Some(Self::TopCenter),
+            12 => Some(Self::TopFrontLeft),
+            13 => Some(Self::TopFrontCenter),
+            14 => Some(Self::TopFrontRight),
+            15 => Some(Self::TopBackLeft),
+            16 => Some(Self::TopBackCenter),
+            17 => Some(Self::TopBackRight),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PosixFdFlags {
+    pub read: bool,
+    pub write: bool,
+    pub error: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerInfo {
+    pub id: u32,
+    pub flags: u32,
+    pub name: String,
+    pub module: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuningInfo {
+    pub tuning_id: u32,
+    pub name: String,
+    pub is_dynamic: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UndoDeltaProperties {
+    pub has_delta: bool,
+    pub are_deltas_persistent: bool,
+    pub format_version: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct UndoChange {
+    pub name: String,
+    pub delta: Vec<u8>,
+    pub delta_can_undo: bool,
 }

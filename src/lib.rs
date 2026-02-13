@@ -52,13 +52,19 @@ pub mod host;
 pub mod instance;
 pub mod types;
 
-// Re-export main types
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
-pub use host::{ClapHost, InputStream, OutputStream};
+pub use host::{ClapHost, HostState, InputStream, OutputStream};
 pub use instance::ClapInstance;
+#[cfg(unix)]
+pub use types::PosixFdFlags;
 pub use types::{
-    AudioBuffer, AudioBuffer32, AudioBuffer64, ClapMidiEvent, MidiData, MidiEvent,
-    NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterFlags, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginInfo, TransportInfo,
+    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
+    AudioBuffer64, AudioPortConfig, AudioPortConfigRequest, AudioPortFlags, AudioPortInfo,
+    AudioPortType, ClapMidiEvent, Color, ContextMenuItem, ContextMenuTarget, MidiData, MidiEvent,
+    NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName, NotePortInfo,
+    ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint,
+    ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel, TrackInfo,
+    TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange, UndoDeltaProperties,
+    VoiceInfo,
 };
