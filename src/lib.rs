@@ -31,7 +31,8 @@
 //! // Process audio with MIDI
 //! let midi = vec![MidiEvent::note_on(0, 60, 100)];
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
-//! plugin.process_f32(&mut buffer, &midi, None, None, Some(&transport))?;
+//! let params = ParameterChanges::new();
+//! plugin.process_f32(&mut buffer, &midi, &params, &[], Some(&transport))?;
 //! ```
 //!
 //! ## Custom MIDI Types
@@ -52,10 +53,25 @@ pub mod host;
 pub mod instance;
 pub mod types;
 
+/// Convert a nullable C string pointer to an owned `String`.
+/// Returns an empty string if the pointer is null.
+///
+/// # Safety
+/// `ptr` must be null or point to a valid, nul-terminated C string.
+pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
+    if ptr.is_null() {
+        String::new()
+    } else {
+        std::ffi::CStr::from_ptr(ptr)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
 pub use host::{ClapHost, HostState, InputStream, OutputStream};
-pub use instance::ClapInstance;
+pub use instance::{ClapInstance, ParamMapping};
 #[cfg(unix)]
 pub use types::PosixFdFlags;
 pub use types::{

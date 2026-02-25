@@ -599,6 +599,7 @@ fn test_transport_flags_are_distinct_bits() {
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_fixedpoint_factors_nonzero() {
     use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
     assert!(CLAP_BEATTIME_FACTOR > 0);
@@ -612,12 +613,12 @@ fn test_host_state_poll_clears_flag() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new();
-    state.restart_requested.store(true, Ordering::Release);
+    state.lifecycle.restart_requested.store(true, Ordering::Release);
 
     // First poll returns true and clears
-    assert!(state.poll(&state.restart_requested));
+    assert!(state.poll(&state.lifecycle.restart_requested));
     // Second poll returns false
-    assert!(!state.poll(&state.restart_requested));
+    assert!(!state.poll(&state.lifecycle.restart_requested));
 }
 
 #[test]
@@ -625,17 +626,17 @@ fn test_host_state_all_flags_start_false() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new();
-    assert!(!state.restart_requested.load(Ordering::Acquire));
-    assert!(!state.process_requested.load(Ordering::Acquire));
-    assert!(!state.callback_requested.load(Ordering::Acquire));
-    assert!(!state.latency_changed.load(Ordering::Acquire));
-    assert!(!state.tail_changed.load(Ordering::Acquire));
-    assert!(!state.params_rescan_requested.load(Ordering::Acquire));
-    assert!(!state.params_flush_requested.load(Ordering::Acquire));
-    assert!(!state.audio_ports_changed.load(Ordering::Acquire));
-    assert!(!state.note_ports_changed.load(Ordering::Acquire));
-    assert!(!state.state_dirty.load(Ordering::Acquire));
-    assert!(!state.gui_closed.load(Ordering::Acquire));
+    assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
+    assert!(!state.lifecycle.process_requested.load(Ordering::Acquire));
+    assert!(!state.lifecycle.callback_requested.load(Ordering::Acquire));
+    assert!(!state.processing.latency_changed.load(Ordering::Acquire));
+    assert!(!state.processing.tail_changed.load(Ordering::Acquire));
+    assert!(!state.params.rescan_requested.load(Ordering::Acquire));
+    assert!(!state.params.flush_requested.load(Ordering::Acquire));
+    assert!(!state.audio_ports.changed.load(Ordering::Acquire));
+    assert!(!state.notes.ports_changed.load(Ordering::Acquire));
+    assert!(!state.processing.state_dirty.load(Ordering::Acquire));
+    assert!(!state.gui.closed.load(Ordering::Acquire));
 }
 
 #[test]
@@ -715,9 +716,9 @@ fn test_host_request_restart_sets_flag() {
     let raw = host.as_raw();
     let request_restart = unsafe { (*raw).request_restart.unwrap() };
 
-    assert!(!state.poll(&state.restart_requested));
+    assert!(!state.poll(&state.lifecycle.restart_requested));
     unsafe { request_restart(raw) };
-    assert!(state.poll(&state.restart_requested));
+    assert!(state.poll(&state.lifecycle.restart_requested));
 }
 
 #[test]
@@ -730,7 +731,7 @@ fn test_host_request_process_sets_flag() {
     let request_process = unsafe { (*raw).request_process.unwrap() };
 
     unsafe { request_process(raw) };
-    assert!(state.poll(&state.process_requested));
+    assert!(state.poll(&state.lifecycle.process_requested));
 }
 
 #[test]
@@ -743,7 +744,7 @@ fn test_host_request_callback_sets_flag() {
     let request_callback = unsafe { (*raw).request_callback.unwrap() };
 
     unsafe { request_callback(raw) };
-    assert!(state.poll(&state.callback_requested));
+    assert!(state.poll(&state.lifecycle.callback_requested));
 }
 
 #[test]
@@ -768,17 +769,18 @@ fn test_host_thread_check_audio_thread() {
     use std::sync::Arc;
 
     let state = Arc::new(HostState::new());
+    let state2 = Arc::clone(&state);
     let host = ClapHost::new(state);
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let tc_ptr = unsafe { get_ext(raw, c"clap.thread-check".as_ptr()) };
     let tc = unsafe { &*(tc_ptr as *const clap_host_thread_check) };
 
-    // Spawn a different thread — it should report as audio thread
     let raw_val = raw as usize;
     let is_main = tc.is_main_thread.unwrap();
     let is_audio = tc.is_audio_thread.unwrap();
 
+    // A random thread should NOT be the audio thread (no audio_thread_id set)
     let handle = std::thread::spawn(move || {
         let raw = raw_val as *const clap_sys::host::clap_host;
         let main = unsafe { is_main(raw) };
@@ -788,7 +790,13 @@ fn test_host_thread_check_audio_thread() {
 
     let (main, audio) = handle.join().unwrap();
     assert!(!main, "Other thread should not be main");
-    assert!(audio, "Other thread should be audio");
+    assert!(!audio, "Random thread should not be audio (no audio_thread_id set)");
+
+    // Set the audio_thread_id to the current thread, then check
+    if let Ok(mut guard) = state2.audio_thread_id.lock() {
+        *guard = Some(std::thread::current().id());
+    }
+    assert!(unsafe { is_audio(raw) }, "Current thread should be audio after setting audio_thread_id");
 }
 
 // ── Phase 8: Final tests ──
@@ -896,17 +904,12 @@ fn test_audio_port_info_types() {
         id: 0,
         name: "Main".to_string(),
         channel_count: 2,
-        flags: AudioPortFlags {
-            is_main: true,
-            supports_64bit: true,
-            prefers_64bit: false,
-            requires_common_sample_size: false,
-        },
+        flags: AudioPortFlags::MAIN | AudioPortFlags::SUPPORTS_64BIT,
         port_type: AudioPortType::Stereo,
         in_place_pair_id: u32::MAX,
     };
 
-    assert!(port.flags.is_main);
+    assert!(port.flags.contains(AudioPortFlags::MAIN));
     assert_eq!(port.channel_count, 2);
     assert_eq!(port.port_type, AudioPortType::Stereo);
 }
@@ -918,17 +921,12 @@ fn test_note_port_info_types() {
     let port = NotePortInfo {
         id: 0,
         name: "MIDI In".to_string(),
-        supported_dialects: NoteDialects {
-            clap: true,
-            midi: true,
-            midi_mpe: false,
-            midi2: false,
-        },
+        supported_dialects: NoteDialects::CLAP | NoteDialects::MIDI,
         preferred_dialect: NoteDialect::Midi,
     };
 
-    assert!(port.supported_dialects.midi);
-    assert!(!port.supported_dialects.midi_mpe);
+    assert!(port.supported_dialects.contains(NoteDialects::MIDI));
+    assert!(!port.supported_dialects.contains(NoteDialects::MIDI_MPE));
     assert_eq!(port.preferred_dialect, NoteDialect::Midi);
 }
 
@@ -1097,17 +1095,17 @@ fn test_needs_restart_non_clearing() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new();
-    assert!(!state.restart_requested.load(Ordering::Acquire));
+    assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
 
-    state.restart_requested.store(true, Ordering::Release);
+    state.lifecycle.restart_requested.store(true, Ordering::Release);
 
     // Non-clearing peek should return true without clearing
-    assert!(state.restart_requested.load(Ordering::Acquire));
-    assert!(state.restart_requested.load(Ordering::Acquire));
+    assert!(state.lifecycle.restart_requested.load(Ordering::Acquire));
+    assert!(state.lifecycle.restart_requested.load(Ordering::Acquire));
 
     // poll() should clear it
-    assert!(state.poll(&state.restart_requested));
-    assert!(!state.restart_requested.load(Ordering::Acquire));
+    assert!(state.poll(&state.lifecycle.restart_requested));
+    assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
 }
 
 // ── New extension type tests ──
@@ -1195,7 +1193,7 @@ fn test_context_menu_target() {
 #[test]
 fn test_context_menu_item_variants() {
     use clap_host::ContextMenuItem;
-    let items = vec![
+    let items = [
         ContextMenuItem::Entry {
             label: "Cut".to_string(),
             is_enabled: true,
@@ -1391,9 +1389,9 @@ fn test_host_audio_ports_config_rescan() {
     let apc_ptr = unsafe { get_ext(raw, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr()) };
     let apc = unsafe { &*(apc_ptr as *const clap_host_audio_ports_config) };
 
-    assert!(!state.audio_ports_config_changed.load(Ordering::Acquire));
+    assert!(!state.audio_ports.config_changed.load(Ordering::Acquire));
     unsafe { apc.rescan.unwrap()(raw) };
-    assert!(state.audio_ports_config_changed.load(Ordering::Acquire));
+    assert!(state.audio_ports.config_changed.load(Ordering::Acquire));
 }
 
 #[test]
@@ -1409,9 +1407,9 @@ fn test_host_remote_controls_changed_and_suggest() {
     let rc_ptr = unsafe { get_ext(raw, CLAP_EXT_REMOTE_CONTROLS.as_ptr()) };
     let rc = unsafe { &*(rc_ptr as *const clap_host_remote_controls) };
 
-    assert!(!state.remote_controls_changed.load(Ordering::Acquire));
+    assert!(!state.remote_controls.changed.load(Ordering::Acquire));
     unsafe { rc.changed.unwrap()(raw) };
-    assert!(state.remote_controls_changed.load(Ordering::Acquire));
+    assert!(state.remote_controls.changed.load(Ordering::Acquire));
 
     unsafe { rc.suggest_page.unwrap()(raw, 42) };
     // suggest_page stores internally — verified by the fact the callback didn't crash
@@ -1447,6 +1445,7 @@ fn test_host_thread_pool_request_exec() {
     // Verify it stored the task count
     assert_eq!(
         state
+            .processing
             .thread_pool_pending
             .load(std::sync::atomic::Ordering::Acquire),
         16
@@ -1545,9 +1544,9 @@ fn test_host_ambisonic_changed_callback() {
     let amb_ptr = unsafe { get_ext(raw, CLAP_EXT_AMBISONIC.as_ptr()) };
     let amb = unsafe { &*(amb_ptr as *const clap_host_ambisonic) };
 
-    assert!(!state.ambisonic_changed.load(Ordering::Acquire));
+    assert!(!state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
     unsafe { amb.changed.unwrap()(raw) };
-    assert!(state.ambisonic_changed.load(Ordering::Acquire));
+    assert!(state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
 }
 
 #[test]
@@ -1563,9 +1562,9 @@ fn test_host_surround_changed_callback() {
     let sur_ptr = unsafe { get_ext(raw, CLAP_EXT_SURROUND.as_ptr()) };
     let sur = unsafe { &*(sur_ptr as *const clap_host_surround) };
 
-    assert!(!state.surround_changed.load(Ordering::Acquire));
+    assert!(!state.audio_ports.surround_changed.load(Ordering::Acquire));
     unsafe { sur.changed.unwrap()(raw) };
-    assert!(state.surround_changed.load(Ordering::Acquire));
+    assert!(state.audio_ports.surround_changed.load(Ordering::Acquire));
 }
 
 // ── POSIX FD support tests (unix only) ──
@@ -1605,7 +1604,7 @@ fn test_host_posix_fd_register_and_unregister() {
 
     // Verify it was stored
     {
-        let fds = state.posix_fds.lock().unwrap();
+        let fds = state.resources.posix_fds.lock().unwrap();
         assert_eq!(fds.len(), 1);
         assert_eq!(fds[0].fd, 42);
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ);
@@ -1616,7 +1615,7 @@ fn test_host_posix_fd_register_and_unregister() {
 
     // Verify removed
     {
-        let fds = state.posix_fds.lock().unwrap();
+        let fds = state.resources.posix_fds.lock().unwrap();
         assert_eq!(fds.len(), 0);
     }
 
@@ -1650,7 +1649,7 @@ fn test_host_posix_fd_modify() {
     });
 
     {
-        let fds = state.posix_fds.lock().unwrap();
+        let fds = state.resources.posix_fds.lock().unwrap();
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE);
     }
 }
@@ -1713,9 +1712,9 @@ fn test_host_triggers_rescan_callback() {
     let trig_ptr = unsafe { get_ext(raw, CLAP_EXT_TRIGGERS.as_ptr()) };
     let trig = unsafe { &*(trig_ptr as *const clap_host_triggers) };
 
-    assert!(!state.triggers_rescan_requested.load(Ordering::Acquire));
+    assert!(!state.resources.triggers_rescan_requested.load(Ordering::Acquire));
     unsafe { trig.rescan.unwrap()(raw, 0) };
-    assert!(state.triggers_rescan_requested.load(Ordering::Acquire));
+    assert!(state.resources.triggers_rescan_requested.load(Ordering::Acquire));
 }
 
 // ── Tuning extension tests ──
@@ -1854,13 +1853,13 @@ fn test_host_undo_begin_cancel_change() {
     let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
     let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
 
-    assert!(!state.undo_in_progress.load(Ordering::Acquire));
+    assert!(!state.undo.in_progress.load(Ordering::Acquire));
 
     unsafe { undo.begin_change.unwrap()(raw) };
-    assert!(state.undo_in_progress.load(Ordering::Acquire));
+    assert!(state.undo.in_progress.load(Ordering::Acquire));
 
     unsafe { undo.cancel_change.unwrap()(raw) };
-    assert!(!state.undo_in_progress.load(Ordering::Acquire));
+    assert!(!state.undo.in_progress.load(Ordering::Acquire));
 }
 
 #[test]
@@ -1888,7 +1887,7 @@ fn test_host_undo_change_made() {
         );
     }
 
-    let changes = state.undo_changes.lock().unwrap();
+    let changes = state.undo.changes.lock().unwrap();
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].name, "Set volume");
     assert_eq!(changes[0].delta, vec![1, 2, 3, 4]);
@@ -1908,14 +1907,14 @@ fn test_host_undo_request_undo_redo() {
     let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
     let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
 
-    assert!(!state.undo_requested.load(Ordering::Acquire));
-    assert!(!state.redo_requested.load(Ordering::Acquire));
+    assert!(!state.undo.requested.load(Ordering::Acquire));
+    assert!(!state.undo.redo_requested.load(Ordering::Acquire));
 
     unsafe { undo.request_undo.unwrap()(raw) };
-    assert!(state.undo_requested.load(Ordering::Acquire));
+    assert!(state.undo.requested.load(Ordering::Acquire));
 
     unsafe { undo.request_redo.unwrap()(raw) };
-    assert!(state.redo_requested.load(Ordering::Acquire));
+    assert!(state.undo.redo_requested.load(Ordering::Acquire));
 }
 
 #[test]
@@ -1931,13 +1930,13 @@ fn test_host_undo_wants_context_updates() {
     let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
     let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
 
-    assert!(!state.undo_wants_context.load(Ordering::Acquire));
+    assert!(!state.undo.wants_context.load(Ordering::Acquire));
 
     unsafe { undo.set_wants_context_updates.unwrap()(raw, true) };
-    assert!(state.undo_wants_context.load(Ordering::Acquire));
+    assert!(state.undo.wants_context.load(Ordering::Acquire));
 
     unsafe { undo.set_wants_context_updates.unwrap()(raw, false) };
-    assert!(!state.undo_wants_context.load(Ordering::Acquire));
+    assert!(!state.undo.wants_context.load(Ordering::Acquire));
 }
 
 // ── Note name host extension tests ──
@@ -1966,9 +1965,9 @@ fn test_host_note_name_changed_callback() {
     let nn_ptr = unsafe { get_ext(raw, CLAP_EXT_NOTE_NAME.as_ptr()) };
     let nn = unsafe { &*(nn_ptr as *const clap_host_note_name) };
 
-    assert!(!state.note_names_changed.load(Ordering::Acquire));
+    assert!(!state.notes.names_changed.load(Ordering::Acquire));
     unsafe { nn.changed.unwrap()(raw) };
-    assert!(state.note_names_changed.load(Ordering::Acquire));
+    assert!(state.notes.names_changed.load(Ordering::Acquire));
 }
 
 // ── Voice info host extension tests ──
@@ -1997,9 +1996,9 @@ fn test_host_voice_info_changed_callback() {
     let vi_ptr = unsafe { get_ext(raw, CLAP_EXT_VOICE_INFO.as_ptr()) };
     let vi = unsafe { &*(vi_ptr as *const clap_host_voice_info) };
 
-    assert!(!state.voice_info_changed.load(Ordering::Acquire));
+    assert!(!state.notes.voice_info_changed.load(Ordering::Acquire));
     unsafe { vi.changed.unwrap()(raw) };
-    assert!(state.voice_info_changed.load(Ordering::Acquire));
+    assert!(state.notes.voice_info_changed.load(Ordering::Acquire));
 }
 
 // ── Preset load host extension tests ──
@@ -2028,13 +2027,13 @@ fn test_host_preset_load_loaded_callback() {
     let pl_ptr = unsafe { get_ext(raw, CLAP_EXT_PRESET_LOAD.as_ptr()) };
     let pl = unsafe { &*(pl_ptr as *const clap_host_preset_load) };
 
-    assert!(!state.preset_loaded.load(Ordering::Acquire));
+    assert!(!state.processing.preset_loaded.load(Ordering::Acquire));
 
     let location = c"/path/to/preset.clap";
     unsafe {
         pl.loaded.unwrap()(raw, 0, location.as_ptr(), std::ptr::null());
     }
-    assert!(state.preset_loaded.load(Ordering::Acquire));
+    assert!(state.processing.preset_loaded.load(Ordering::Acquire));
 }
 
 #[test]

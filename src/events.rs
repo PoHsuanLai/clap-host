@@ -311,19 +311,23 @@ impl InputEventList {
         }
     }
 
-    pub fn add_midi(&mut self, event: &MidiEvent) {
+    pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
         if let Some(clap_event) = ClapEvent::from_midi_event(event) {
             self.events.push(clap_event);
         }
+        self
     }
 
-    pub fn add_midi_events(&mut self, events: &[MidiEvent]) {
+    pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
         for event in events {
-            self.add_midi(event);
+            if let Some(clap_event) = ClapEvent::from_midi_event(event) {
+                self.events.push(clap_event);
+            }
         }
+        self
     }
 
-    pub fn add_param_changes(&mut self, changes: &ParameterChanges) {
+    pub fn add_param_changes(&mut self, changes: &ParameterChanges) -> &mut Self {
         for queue in &changes.queues {
             for point in &queue.points {
                 self.events.push(ClapEvent::param_value(
@@ -333,9 +337,10 @@ impl InputEventList {
                 ));
             }
         }
+        self
     }
 
-    pub fn add_note_expressions(&mut self, expressions: &[NoteExpressionValue]) {
+    pub fn add_note_expressions(&mut self, expressions: &[NoteExpressionValue]) -> &mut Self {
         for expr in expressions {
             self.events.push(ClapEvent::note_expression(
                 expr.sample_offset as u32,
@@ -344,10 +349,12 @@ impl InputEventList {
                 expr.value,
             ));
         }
+        self
     }
 
-    pub fn sort_by_time(&mut self) {
+    pub fn sort_by_time(&mut self) -> &mut Self {
         self.events.sort_by_key(|e| e.header().time);
+        self
     }
 
     pub fn as_raw(&self) -> *const clap_input_events {

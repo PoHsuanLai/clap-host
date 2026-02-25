@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "CLAP plugin hosting library for Rust"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/AcaciaAudio/clap-host"
+repository = "https://github.com/PoHsuanLai/clap-host"
 keywords = ["clap", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
 readme = "README.md"
 
 [dependencies]
+bitflags = "2"
 clap-sys = "0.5"
 libloading = "0.8"
 smallvec = "1"

@@ -1,0 +1,691 @@
+//! Polling, GUI, context menu, undo, resource, and misc host-interaction methods.
+
+use super::ClapInstance;
+use crate::error::{ClapError, Result};
+use crate::host::HostState;
+use crate::types::{
+    ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
+    TriggerInfo, UndoDeltaProperties,
+};
+use clap_sys::ext::context_menu::{
+    clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
+    clap_context_menu_item_title, clap_context_menu_submenu, clap_context_menu_target,
+    CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU, CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY,
+    CLAP_CONTEXT_MENU_ITEM_END_SUBMENU, CLAP_CONTEXT_MENU_ITEM_ENTRY,
+    CLAP_CONTEXT_MENU_ITEM_SEPARATOR, CLAP_CONTEXT_MENU_ITEM_TITLE,
+    CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL, CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
+};
+use clap_sys::ext::draft::triggers::clap_trigger_info;
+use clap_sys::ext::draft::undo::clap_undo_delta_properties;
+use clap_sys::ext::gui::{clap_window, clap_window_handle};
+use clap_sys::ext::remote_controls::clap_remote_controls_page;
+use crate::cstr_to_string;
+use std::ffi::c_void;
+use std::sync::Arc;
+
+#[cfg(target_os = "macos")]
+fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle) {
+    use clap_sys::ext::gui::CLAP_WINDOW_API_COCOA;
+    (
+        CLAP_WINDOW_API_COCOA.as_ptr(),
+        clap_window_handle { cocoa: parent },
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle) {
+    use clap_sys::ext::gui::CLAP_WINDOW_API_WIN32;
+    (
+        CLAP_WINDOW_API_WIN32.as_ptr(),
+        clap_window_handle { win32: parent },
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle) {
+    use clap_sys::ext::gui::CLAP_WINDOW_API_X11;
+    (
+        CLAP_WINDOW_API_X11.as_ptr(),
+        clap_window_handle {
+            x11: parent as u64,
+        },
+    )
+}
+
+impl ClapInstance {
+    // ── GUI ──────────────────────────────────────────────────────────────
+
+    pub fn has_gui(&self) -> bool {
+        !self.extensions.gui.gui.is_null()
+    }
+
+    pub fn open_gui(&mut self, parent: *mut std::ffi::c_void) -> Result<(u32, u32)> {
+        if self.extensions.gui.gui.is_null() {
+            return Err(ClapError::GuiError("No GUI extension".to_string()));
+        }
+        let gui = unsafe { &*self.extensions.gui.gui };
+
+        let (api, window_handle) = platform_window_handle(parent);
+
+        if let Some(create_fn) = gui.create {
+            if !unsafe { create_fn(self.plugin, api, false) } {
+                return Err(ClapError::GuiError("GUI create failed".to_string()));
+            }
+        }
+
+        if let Some(set_parent_fn) = gui.set_parent {
+            let window = clap_window {
+                api,
+                specific: window_handle,
+            };
+            if !unsafe { set_parent_fn(self.plugin, &window) } {
+                return Err(ClapError::GuiError("Set parent failed".to_string()));
+            }
+        }
+
+        let (width, height) = if let Some(get_size_fn) = gui.get_size {
+            let mut w: u32 = 0;
+            let mut h: u32 = 0;
+            if unsafe { get_size_fn(self.plugin, &mut w, &mut h) } {
+                (w, h)
+            } else {
+                (800, 600)
+            }
+        } else {
+            (800, 600)
+        };
+
+        if let Some(show_fn) = gui.show {
+            unsafe { show_fn(self.plugin) };
+        }
+
+        Ok((width, height))
+    }
+
+    pub fn close_gui(&mut self) {
+        if self.extensions.gui.gui.is_null() {
+            return;
+        }
+        let gui = unsafe { &*self.extensions.gui.gui };
+        if let Some(hide_fn) = gui.hide {
+            unsafe { hide_fn(self.plugin) };
+        }
+        if let Some(destroy_fn) = gui.destroy {
+            unsafe { destroy_fn(self.plugin) };
+        }
+    }
+
+    // ── Polling ──────────────────────────────────────────────────────────
+
+    pub fn host_state(&self) -> &Arc<HostState> {
+        &self.host_state
+    }
+
+    pub fn poll_restart_requested(&self) -> bool {
+        self.host_state.poll(&self.host_state.lifecycle.restart_requested)
+    }
+
+    pub fn poll_process_requested(&self) -> bool {
+        self.host_state.poll(&self.host_state.lifecycle.process_requested)
+    }
+
+    pub fn poll_callback_requested(&self) -> bool {
+        self.host_state.poll(&self.host_state.lifecycle.callback_requested)
+    }
+
+    pub fn poll_latency_changed(&self) -> bool {
+        self.host_state.poll(&self.host_state.processing.latency_changed)
+    }
+
+    pub fn poll_tail_changed(&self) -> bool {
+        self.host_state.poll(&self.host_state.processing.tail_changed)
+    }
+
+    pub fn poll_params_rescan(&self) -> bool {
+        self.host_state
+            .poll(&self.host_state.params.rescan_requested)
+    }
+
+    pub fn poll_params_flush_requested(&self) -> bool {
+        self.host_state
+            .poll(&self.host_state.params.flush_requested)
+    }
+
+    pub fn poll_state_dirty(&self) -> bool {
+        self.host_state.poll(&self.host_state.processing.state_dirty)
+    }
+
+    pub fn poll_audio_ports_changed(&self) -> bool {
+        self.host_state.poll(&self.host_state.audio_ports.changed)
+    }
+
+    pub fn poll_note_ports_changed(&self) -> bool {
+        self.host_state.poll(&self.host_state.notes.ports_changed)
+    }
+
+    pub fn poll_gui_closed(&self) -> bool {
+        self.host_state.poll(&self.host_state.gui.closed)
+    }
+
+    /// Non-consuming peek at the restart flag. Unlike `poll_restart_requested`
+    /// (which clears the flag on read), this returns the current value without
+    /// resetting it. Useful for checking if a restart is pending without
+    /// consuming the notification.
+    pub fn needs_restart(&self) -> bool {
+        self.host_state
+            .lifecycle
+            .restart_requested
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Fire any expired timers. Call this periodically from the main thread.
+    /// Returns the number of timer callbacks fired.
+    pub fn poll_timers(&mut self) -> usize {
+        if self.extensions.system.timer_support.is_null() {
+            return 0;
+        }
+        let ext = unsafe { &*self.extensions.system.timer_support };
+        let on_timer = match ext.on_timer {
+            Some(f) => f,
+            None => return 0,
+        };
+
+        let now = std::time::Instant::now();
+        let mut fired = 0usize;
+        let mut expired_ids = Vec::new();
+
+        if let Ok(mut timers) = self.host_state.timer.timers.lock() {
+            for timer in timers.iter_mut() {
+                let elapsed = now.duration_since(timer.last_fire);
+                if elapsed.as_millis() >= timer.period_ms as u128 {
+                    expired_ids.push(timer.id);
+                    timer.last_fire = now;
+                }
+            }
+        }
+
+        for id in expired_ids {
+            unsafe { on_timer(self.plugin, id) };
+            fired += 1;
+        }
+
+        fired
+    }
+
+    pub fn poll_audio_ports_config_changed(&self) -> bool {
+        self.host_state
+            .poll(&self.host_state.audio_ports.config_changed)
+    }
+
+    pub fn poll_remote_controls_changed(&self) -> bool {
+        self.host_state
+            .poll(&self.host_state.remote_controls.changed)
+    }
+
+    pub fn poll_suggested_remote_page(&self) -> Option<u32> {
+        let val = self
+            .host_state
+            .remote_controls
+            .suggested_page
+            .swap(u32::MAX, std::sync::atomic::Ordering::AcqRel);
+        if val == u32::MAX {
+            None
+        } else {
+            Some(val)
+        }
+    }
+
+    pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
+        if let Ok(mut reqs) = self.host_state.transport.requests.lock() {
+            std::mem::take(&mut *reqs)
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn poll_note_names_changed(&self) -> bool {
+        self.host_state.poll(&self.host_state.notes.names_changed)
+    }
+
+    pub fn poll_voice_info_changed(&self) -> bool {
+        self.host_state.poll(&self.host_state.notes.voice_info_changed)
+    }
+
+    pub fn poll_preset_loaded(&self) -> bool {
+        self.host_state.poll(&self.host_state.processing.preset_loaded)
+    }
+
+    /// Call `plugin.on_main_thread()` when the plugin has requested a main-thread callback.
+    pub fn on_main_thread(&mut self) -> &mut Self {
+        let plugin_ref = unsafe { &*self.plugin };
+        if let Some(f) = plugin_ref.on_main_thread {
+            unsafe { f(self.plugin) };
+        }
+        self
+    }
+
+    // ── Track Info ───────────────────────────────────────────────────────
+
+    pub fn set_track_info(&self, info: TrackInfo) {
+        if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
+            *guard = Some(info);
+        }
+    }
+
+    pub fn notify_track_info_changed(&self) {
+        if self.extensions.system.track_info.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.system.track_info };
+        if let Some(f) = ext.changed {
+            unsafe { f(self.plugin) };
+        }
+    }
+
+    // ── Remote Controls ──────────────────────────────────────────────────
+
+    pub fn remote_controls_page_count(&self) -> usize {
+        if self.extensions.params.remote_controls.is_null() {
+            return 0;
+        }
+        let ext = unsafe { &*self.extensions.params.remote_controls };
+        match ext.count {
+            Some(f) => (unsafe { f(self.plugin) }) as usize,
+            None => 0,
+        }
+    }
+
+    pub fn get_remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
+        if self.extensions.params.remote_controls.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.params.remote_controls };
+        let get_fn = ext.get?;
+        let mut page: clap_remote_controls_page = unsafe { std::mem::zeroed() };
+        if !unsafe { get_fn(self.plugin, index as u32, &mut page) } {
+            return None;
+        }
+        Some(RemoteControlsPage {
+            section_name: unsafe { cstr_to_string(page.section_name.as_ptr()) },
+            page_id: page.page_id,
+            page_name: unsafe { cstr_to_string(page.page_name.as_ptr()) },
+            param_ids: page.param_ids,
+            is_for_preset: page.is_for_preset,
+        })
+    }
+
+    // ── Context Menu ─────────────────────────────────────────────────────
+
+    pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
+        if self.extensions.gui.context_menu.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.gui.context_menu };
+        let populate_fn = ext.populate?;
+
+        let clap_target = match target {
+            ContextMenuTarget::Global => clap_context_menu_target {
+                kind: CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL,
+                id: 0,
+            },
+            ContextMenuTarget::Param(id) => clap_context_menu_target {
+                kind: CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
+                id,
+            },
+        };
+
+        let mut items: Vec<ContextMenuItem> = Vec::new();
+        let items_ptr = &mut items as *mut Vec<ContextMenuItem> as *mut c_void;
+
+        let builder = clap_context_menu_builder {
+            ctx: items_ptr,
+            add_item: Some(context_menu_builder_add_item),
+            supports: Some(context_menu_builder_supports),
+        };
+
+        if unsafe { populate_fn(self.plugin, &clap_target, &builder) } {
+            Some(items)
+        } else {
+            None
+        }
+    }
+
+    pub fn context_menu_perform(&self, target: ContextMenuTarget, action_id: u32) -> bool {
+        if self.extensions.gui.context_menu.is_null() {
+            return false;
+        }
+        let ext = unsafe { &*self.extensions.gui.context_menu };
+        let perform_fn = match ext.perform {
+            Some(f) => f,
+            None => return false,
+        };
+        let clap_target = match target {
+            ContextMenuTarget::Global => clap_context_menu_target {
+                kind: CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL,
+                id: 0,
+            },
+            ContextMenuTarget::Param(id) => clap_context_menu_target {
+                kind: CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
+                id,
+            },
+        };
+        unsafe { perform_fn(self.plugin, &clap_target, action_id) }
+    }
+
+    // ── Triggers ─────────────────────────────────────────────────────────
+
+    pub fn trigger_count(&self) -> usize {
+        if self.extensions.system.triggers.is_null() {
+            return 0;
+        }
+        let ext = unsafe { &*self.extensions.system.triggers };
+        match ext.count {
+            Some(f) => (unsafe { f(self.plugin) }) as usize,
+            None => 0,
+        }
+    }
+
+    pub fn get_trigger_info(&self, index: usize) -> Option<TriggerInfo> {
+        if self.extensions.system.triggers.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.system.triggers };
+        let get_fn = ext.get_info?;
+        let mut info: clap_trigger_info = unsafe { std::mem::zeroed() };
+        if !unsafe { get_fn(self.plugin, index as u32, &mut info) } {
+            return None;
+        }
+        Some(TriggerInfo {
+            id: info.id,
+            flags: info.flags,
+            name: unsafe { cstr_to_string(info.name.as_ptr()) },
+            module: unsafe { cstr_to_string(info.module.as_ptr()) },
+        })
+    }
+
+    // ── Thread Pool ──────────────────────────────────────────────────────
+
+    pub fn thread_pool_exec(&self, task_index: u32) {
+        if self.extensions.system.thread_pool.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.system.thread_pool };
+        if let Some(f) = ext.exec {
+            unsafe { f(self.plugin, task_index) };
+        }
+    }
+
+    // ── Tuning ───────────────────────────────────────────────────────────
+
+    pub fn notify_tuning_changed(&self) {
+        if self.extensions.system.tuning.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.system.tuning };
+        if let Some(f) = ext.changed {
+            unsafe { f(self.plugin) };
+        }
+    }
+
+    // ── Resource Directory ───────────────────────────────────────────────
+
+    pub fn resource_set_directory(&self, path: &str, is_shared: bool) {
+        if self.extensions.system.resource_directory.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.system.resource_directory };
+        if let Some(f) = ext.set_directory {
+            if let Ok(cstr) = std::ffi::CString::new(path) {
+                unsafe { f(self.plugin, cstr.as_ptr(), is_shared) };
+            }
+        }
+    }
+
+    pub fn resource_collect(&self, all: bool) {
+        if self.extensions.system.resource_directory.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.system.resource_directory };
+        if let Some(f) = ext.collect {
+            unsafe { f(self.plugin, all) };
+        }
+    }
+
+    pub fn resource_files_count(&self) -> u32 {
+        if self.extensions.system.resource_directory.is_null() {
+            return 0;
+        }
+        let ext = unsafe { &*self.extensions.system.resource_directory };
+        match ext.get_files_count {
+            Some(f) => unsafe { f(self.plugin) },
+            None => 0,
+        }
+    }
+
+    pub fn resource_get_file_path(&self, index: u32) -> Option<String> {
+        if self.extensions.system.resource_directory.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.system.resource_directory };
+        let get_fn = ext.get_file_path?;
+        let mut buf = [0i8; 4096];
+        let result = unsafe { get_fn(self.plugin, index, buf.as_mut_ptr(), buf.len() as u32) };
+        if result < 0 {
+            return None;
+        }
+        Some(unsafe { cstr_to_string(buf.as_ptr()) })
+    }
+
+    // ── Undo ─────────────────────────────────────────────────────────────
+
+    pub fn undo_get_delta_properties(&self) -> Option<UndoDeltaProperties> {
+        if self.extensions.undo.delta.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.undo.delta };
+        let get_fn = ext.get_delta_properties?;
+        let mut props: clap_undo_delta_properties = unsafe { std::mem::zeroed() };
+        unsafe { get_fn(self.plugin, &mut props) };
+        Some(UndoDeltaProperties {
+            has_delta: props.has_delta,
+            are_deltas_persistent: props.are_deltas_persistent,
+            format_version: props.format_version,
+        })
+    }
+
+    pub fn undo_can_use_format_version(&self, version: u32) -> bool {
+        if self.extensions.undo.delta.is_null() {
+            return false;
+        }
+        let ext = unsafe { &*self.extensions.undo.delta };
+        match ext.can_use_delta_format_version {
+            Some(f) => unsafe { f(self.plugin, version) },
+            None => false,
+        }
+    }
+
+    pub fn undo_apply_delta(&mut self, format_version: u32, delta: &[u8]) -> bool {
+        if self.extensions.undo.delta.is_null() {
+            return false;
+        }
+        let ext = unsafe { &*self.extensions.undo.delta };
+        match ext.undo {
+            Some(f) => unsafe {
+                f(
+                    self.plugin,
+                    format_version,
+                    delta.as_ptr() as *const _,
+                    delta.len(),
+                )
+            },
+            None => false,
+        }
+    }
+
+    pub fn redo_apply_delta(&mut self, format_version: u32, delta: &[u8]) -> bool {
+        if self.extensions.undo.delta.is_null() {
+            return false;
+        }
+        let ext = unsafe { &*self.extensions.undo.delta };
+        match ext.redo {
+            Some(f) => unsafe {
+                f(
+                    self.plugin,
+                    format_version,
+                    delta.as_ptr() as *const _,
+                    delta.len(),
+                )
+            },
+            None => false,
+        }
+    }
+
+    pub fn undo_set_can_undo(&self, can_undo: bool) {
+        if self.extensions.undo.context.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.undo.context };
+        if let Some(f) = ext.set_can_undo {
+            unsafe { f(self.plugin, can_undo) };
+        }
+    }
+
+    pub fn undo_set_can_redo(&self, can_redo: bool) {
+        if self.extensions.undo.context.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.undo.context };
+        if let Some(f) = ext.set_can_redo {
+            unsafe { f(self.plugin, can_redo) };
+        }
+    }
+
+    pub fn undo_set_undo_name(&self, name: &str) {
+        if self.extensions.undo.context.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.undo.context };
+        if let Some(f) = ext.set_undo_name {
+            if let Ok(cstr) = std::ffi::CString::new(name) {
+                unsafe { f(self.plugin, cstr.as_ptr()) };
+            }
+        }
+    }
+
+    pub fn undo_set_redo_name(&self, name: &str) {
+        if self.extensions.undo.context.is_null() {
+            return;
+        }
+        let ext = unsafe { &*self.extensions.undo.context };
+        if let Some(f) = ext.set_redo_name {
+            if let Ok(cstr) = std::ffi::CString::new(name) {
+                unsafe { f(self.plugin, cstr.as_ptr()) };
+            }
+        }
+    }
+
+    // ── POSIX FDs ────────────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    pub fn poll_posix_fds(&mut self) -> usize {
+        if self.extensions.system.posix_fd_support.is_null() {
+            return 0;
+        }
+        let ext = unsafe { &*self.extensions.system.posix_fd_support };
+        let on_fd = match ext.on_fd {
+            Some(f) => f,
+            None => return 0,
+        };
+
+        let fds: Vec<(i32, u32)> = if let Ok(guard) = self.host_state.resources.posix_fds.lock() {
+            guard.iter().map(|e| (e.fd, e.flags)).collect()
+        } else {
+            return 0;
+        };
+
+        let mut fired = 0;
+        for (fd, flags) in fds {
+            unsafe { on_fd(self.plugin, fd, flags) };
+            fired += 1;
+        }
+        fired
+    }
+}
+
+// ── Context Menu Builder Callbacks ───────────────────────────────────────
+
+pub(super) unsafe extern "C" fn context_menu_builder_add_item(
+    builder: *const clap_context_menu_builder,
+    item_kind: u32,
+    item_data: *const c_void,
+) -> bool {
+    if builder.is_null() || (*builder).ctx.is_null() {
+        return false;
+    }
+    let items = &mut *((*builder).ctx as *mut Vec<ContextMenuItem>);
+    let item = match item_kind {
+        CLAP_CONTEXT_MENU_ITEM_ENTRY => {
+            if item_data.is_null() {
+                return false;
+            }
+            let entry = &*(item_data as *const clap_context_menu_entry);
+            ContextMenuItem::Entry {
+                label: cstr_to_string(entry.label),
+                is_enabled: entry.is_enabled,
+                action_id: entry.action_id,
+            }
+        }
+        CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY => {
+            if item_data.is_null() {
+                return false;
+            }
+            let entry = &*(item_data as *const clap_context_menu_check_entry);
+            ContextMenuItem::CheckEntry {
+                label: cstr_to_string(entry.label),
+                is_enabled: entry.is_enabled,
+                is_checked: entry.is_checked,
+                action_id: entry.action_id,
+            }
+        }
+        CLAP_CONTEXT_MENU_ITEM_SEPARATOR => ContextMenuItem::Separator,
+        CLAP_CONTEXT_MENU_ITEM_TITLE => {
+            if item_data.is_null() {
+                return false;
+            }
+            let title = &*(item_data as *const clap_context_menu_item_title);
+            ContextMenuItem::Title {
+                title: cstr_to_string(title.title),
+                is_enabled: title.is_enabled,
+            }
+        }
+        CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU => {
+            if item_data.is_null() {
+                return false;
+            }
+            let sub = &*(item_data as *const clap_context_menu_submenu);
+            ContextMenuItem::BeginSubmenu {
+                label: cstr_to_string(sub.label),
+                is_enabled: sub.is_enabled,
+            }
+        }
+        CLAP_CONTEXT_MENU_ITEM_END_SUBMENU => ContextMenuItem::EndSubmenu,
+        _ => return false,
+    };
+    items.push(item);
+    true
+}
+
+pub(super) unsafe extern "C" fn context_menu_builder_supports(
+    _builder: *const clap_context_menu_builder,
+    item_kind: u32,
+) -> bool {
+    matches!(
+        item_kind,
+        CLAP_CONTEXT_MENU_ITEM_ENTRY
+            | CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY
+            | CLAP_CONTEXT_MENU_ITEM_SEPARATOR
+            | CLAP_CONTEXT_MENU_ITEM_TITLE
+            | CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU
+            | CLAP_CONTEXT_MENU_ITEM_END_SUBMENU
+    )
+}

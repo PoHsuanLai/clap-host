@@ -1,6 +1,8 @@
 //! Common types for CLAP plugin hosting.
 
+use bitflags::bitflags;
 use smallvec::SmallVec;
+use std::fmt;
 
 pub struct AudioBuffer<'a, T = f32> {
     pub inputs: &'a [&'a [T]],
@@ -48,6 +50,33 @@ impl PluginInfo {
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
+    }
+
+    pub fn url(mut self, url: impl Into<String>) -> Self {
+        self.url = url.into();
+        self
+    }
+
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
+        self.description = desc.into();
+        self
+    }
+
+    pub fn features(mut self, features: Vec<String>) -> Self {
+        self.features = features;
+        self
+    }
+
+    pub fn audio_io(mut self, inputs: usize, outputs: usize) -> Self {
+        self.audio_inputs = inputs;
+        self.audio_outputs = outputs;
+        self
+    }
+}
+
+impl fmt::Display for PluginInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} v{} by {}", self.name, self.version, self.vendor)
     }
 }
 
@@ -220,6 +249,40 @@ pub struct NoteExpressionValue {
     pub value: f64,
 }
 
+impl NoteExpressionValue {
+    pub fn new(expression_type: NoteExpressionType, note_id: i32, value: f64) -> Self {
+        Self {
+            sample_offset: 0,
+            note_id,
+            port_index: 0,
+            channel: -1,
+            key: -1,
+            expression_type,
+            value,
+        }
+    }
+
+    pub fn at(mut self, sample_offset: i32) -> Self {
+        self.sample_offset = sample_offset;
+        self
+    }
+
+    pub fn port(mut self, port_index: i16) -> Self {
+        self.port_index = port_index;
+        self
+    }
+
+    pub fn on_channel(mut self, channel: i16) -> Self {
+        self.channel = channel;
+        self
+    }
+
+    pub fn on_key(mut self, key: i16) -> Self {
+        self.key = key;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterPoint {
     pub sample_offset: i32,
@@ -240,11 +303,12 @@ impl ParameterQueue {
         }
     }
 
-    pub fn add_point(&mut self, sample_offset: i32, value: f64) {
+    pub fn add_point(&mut self, sample_offset: i32, value: f64) -> &mut Self {
         self.points.push(ParameterPoint {
             sample_offset,
             value,
         });
+        self
     }
 }
 
@@ -258,8 +322,9 @@ impl ParameterChanges {
         Self::default()
     }
 
-    pub fn add_queue(&mut self, queue: ParameterQueue) {
+    pub fn add_queue(&mut self, queue: ParameterQueue) -> &mut Self {
         self.queues.push(queue);
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -267,24 +332,26 @@ impl ParameterChanges {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ParameterFlags {
-    pub is_stepped: bool,
-    pub is_periodic: bool,
-    pub is_hidden: bool,
-    pub is_readonly: bool,
-    pub is_bypass: bool,
-    pub is_automatable: bool,
-    pub is_automatable_per_note_id: bool,
-    pub is_automatable_per_key: bool,
-    pub is_automatable_per_channel: bool,
-    pub is_automatable_per_port: bool,
-    pub is_modulatable: bool,
-    pub is_modulatable_per_note_id: bool,
-    pub is_modulatable_per_key: bool,
-    pub is_modulatable_per_channel: bool,
-    pub is_modulatable_per_port: bool,
-    pub requires_process: bool,
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct ParameterFlags: u32 {
+        const STEPPED                 = 1 << 0;
+        const PERIODIC                = 1 << 1;
+        const HIDDEN                  = 1 << 2;
+        const READONLY                = 1 << 3;
+        const BYPASS                  = 1 << 4;
+        const AUTOMATABLE             = 1 << 5;
+        const AUTOMATABLE_PER_NOTE_ID = 1 << 6;
+        const AUTOMATABLE_PER_KEY     = 1 << 7;
+        const AUTOMATABLE_PER_CHANNEL = 1 << 8;
+        const AUTOMATABLE_PER_PORT    = 1 << 9;
+        const MODULATABLE             = 1 << 10;
+        const MODULATABLE_PER_NOTE_ID = 1 << 11;
+        const MODULATABLE_PER_KEY     = 1 << 12;
+        const MODULATABLE_PER_CHANNEL = 1 << 13;
+        const MODULATABLE_PER_PORT    = 1 << 14;
+        const REQUIRES_PROCESS        = 1 << 15;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +377,23 @@ impl ParameterInfo {
             flags: ParameterFlags::default(),
         }
     }
+
+    pub fn module(mut self, module: impl Into<String>) -> Self {
+        self.module = module.into();
+        self
+    }
+
+    pub fn range(mut self, min: f64, max: f64, default: f64) -> Self {
+        self.min_value = min;
+        self.max_value = max;
+        self.default_value = default;
+        self
+    }
+
+    pub fn flags(mut self, flags: ParameterFlags) -> Self {
+        self.flags = flags;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -322,12 +406,14 @@ pub struct AudioPortInfo {
     pub in_place_pair_id: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AudioPortFlags {
-    pub is_main: bool,
-    pub supports_64bit: bool,
-    pub prefers_64bit: bool,
-    pub requires_common_sample_size: bool,
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct AudioPortFlags: u32 {
+        const MAIN                      = 1 << 0;
+        const SUPPORTS_64BIT            = 1 << 1;
+        const PREFERS_64BIT             = 1 << 2;
+        const REQUIRES_COMMON_SAMPLE_SIZE = 1 << 3;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,12 +431,14 @@ pub struct NotePortInfo {
     pub preferred_dialect: NoteDialect,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoteDialects {
-    pub clap: bool,
-    pub midi: bool,
-    pub midi_mpe: bool,
-    pub midi2: bool,
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct NoteDialects: u32 {
+        const CLAP     = 1 << 0;
+        const MIDI     = 1 << 1;
+        const MIDI_MPE = 1 << 2;
+        const MIDI2    = 1 << 3;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,12 +483,44 @@ pub enum StateContext {
     ForDuplicate,
 }
 
+impl From<StateContext> for clap_sys::ext::state_context::clap_plugin_state_context_type {
+    fn from(ctx: StateContext) -> Self {
+        match ctx {
+            StateContext::ForPreset => clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PRESET,
+            StateContext::ForProject => clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PROJECT,
+            StateContext::ForDuplicate => {
+                clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_DUPLICATE
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     pub alpha: u8,
     pub red: u8,
     pub green: u8,
     pub blue: u8,
+}
+
+impl Color {
+    pub const fn rgb(red: u8, green: u8, blue: u8) -> Self {
+        Self {
+            alpha: 255,
+            red,
+            green,
+            blue,
+        }
+    }
+
+    pub const fn rgba(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
+        Self {
+            alpha,
+            red,
+            green,
+            blue,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
