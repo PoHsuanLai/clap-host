@@ -20,7 +20,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use clap_host::{ClapInstance, AudioBuffer, MidiEvent, TransportInfo};
+//! use clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
 //!
 //! // Load a CLAP plugin
 //! let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
@@ -29,10 +29,12 @@
 //! println!("Name: {}", plugin.info().name);
 //!
 //! // Process audio with MIDI
-//! let midi = vec![MidiEvent::note_on(0, 60, 100)];
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
-//! let params = ParameterChanges::new();
-//! plugin.process_f32(&mut buffer, &midi, &params, &[], Some(&transport))?;
+//! plugin.process(&mut buffer, &ProcessContext {
+//!     midi: &[MidiEvent::note_on(0, 0, 60, 100)],
+//!     transport: Some(&transport),
+//!     ..Default::default()
+//! })?;
 //! ```
 //!
 //! ## Custom MIDI Types
@@ -71,7 +73,7 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
 pub use host::{ClapHost, HostState, InputStream, OutputStream};
-pub use instance::{ClapInstance, ParamMapping};
+pub use instance::{ClapInstance, ClapSample, ParamMapping, ProcessContext};
 #[cfg(unix)]
 pub use types::PosixFdFlags;
 pub use types::{

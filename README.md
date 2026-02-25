@@ -12,22 +12,19 @@ Handles plugin loading, audio processing, MIDI, parameters, transport, state, GU
 ## Quick Start
 
 ```rust
-use clap_host::{ClapInstance, MidiEvent, ParameterChanges, TransportInfo};
+use clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
 
 // Load a plugin
 let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
 println!("Loaded: {}", plugin.info()); // "Diva v1.4 by u-he"
 
 // Process audio
-let midi = vec![MidiEvent::note_on(0, 0, 60, 100)];
 let transport = TransportInfo::new().with_tempo(128.0).with_playing(true);
-let output = plugin.process_f32(
-    &mut buffer,
-    &midi,
-    &ParameterChanges::new(),
-    &[],
-    Some(&transport),
-)?;
+let output = plugin.process(&mut buffer, &ProcessContext {
+    midi: &[MidiEvent::note_on(0, 0, 60, 100)],
+    transport: Some(&transport),
+    ..Default::default()
+})?;
 ```
 
 ## Features

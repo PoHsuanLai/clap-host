@@ -4,8 +4,7 @@ use super::ClapInstance;
 use crate::error::{ClapError, Result};
 use crate::events::{InputEventList, OutputEventList};
 use crate::types::{
-    AudioBuffer, AudioBuffer32, AudioBuffer64, MidiEvent, NoteExpressionValue, ParameterChanges,
-    TransportInfo,
+    AudioBuffer, MidiEvent, NoteExpressionValue, ParameterChanges, TransportInfo,
 };
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
@@ -25,11 +24,32 @@ pub struct ProcessOutput {
     pub note_expressions: Vec<NoteExpressionValue>,
 }
 
+/// All inputs for a single process call. Use `..Default::default()` to fill
+/// fields you don't need — compiles to zero-cost empty slices and None.
+///
+/// ```ignore
+/// plugin.process(&mut buffer, &ProcessContext {
+///     midi: &[MidiEvent::note_on(0, 0, 60, 100)],
+///     transport: Some(&transport),
+///     ..Default::default()
+/// })?;
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProcessContext<'a> {
+    pub midi: &'a [MidiEvent],
+    pub params: Option<&'a ParameterChanges>,
+    pub expressions: &'a [NoteExpressionValue],
+    pub transport: Option<&'a TransportInfo>,
+}
+
 /// Trait abstracting over f32/f64 for CLAP audio buffer construction.
 ///
 /// CLAP's `clap_audio_buffer` has separate `data32` and `data64` fields.
 /// Each implementation populates the correct field and nulls the other.
 pub trait ClapSample: Copy + Default + 'static {
+    /// Returns `true` if the plugin must advertise 64-bit support for this type.
+    fn requires_f64() -> bool;
+
     fn build_port_buffers(
         port_channels: &[u32],
         ptrs: &mut Vec<*mut Self>,
@@ -39,6 +59,10 @@ pub trait ClapSample: Copy + Default + 'static {
 }
 
 impl ClapSample for f32 {
+    fn requires_f64() -> bool {
+        false
+    }
+
     fn build_port_buffers(
         port_channels: &[u32],
         ptrs: &mut Vec<*mut f32>,
@@ -65,6 +89,10 @@ impl ClapSample for f32 {
 }
 
 impl ClapSample for f64 {
+    fn requires_f64() -> bool {
+        true
+    }
+
     fn build_port_buffers(
         port_channels: &[u32],
         ptrs: &mut Vec<*mut f64>,
@@ -106,33 +134,34 @@ fn pad_scratch<T: Copy + Default>(
 }
 
 impl ClapInstance {
-    pub fn process_f32(
+    /// Process audio through the plugin.
+    ///
+    /// Generic over [`ClapSample`] — pass an `AudioBuffer32` for f32 or
+    /// `AudioBuffer64` for f64. The f64 path automatically checks that the
+    /// plugin advertises 64-bit support.
+    ///
+    /// ```ignore
+    /// plugin.process(&mut buffer, &ProcessContext {
+    ///     midi: &[MidiEvent::note_on(0, 0, 60, 100)],
+    ///     transport: Some(&transport),
+    ///     ..Default::default()
+    /// })?;
+    /// ```
+    pub fn process<T: ClapSample>(
         &mut self,
-        buffer: &mut AudioBuffer32,
-        midi_events: &[MidiEvent],
-        param_changes: &ParameterChanges,
-        note_expressions: &[NoteExpressionValue],
-        transport: Option<&TransportInfo>,
+        buffer: &mut AudioBuffer<T>,
+        ctx: &ProcessContext<'_>,
     ) -> Result<ProcessOutput> {
-        self.process_impl(buffer, midi_events, param_changes, note_expressions, transport)
-    }
-
-    pub fn process_f64(
-        &mut self,
-        buffer: &mut AudioBuffer64,
-        midi_events: &[MidiEvent],
-        param_changes: &ParameterChanges,
-        note_expressions: &[NoteExpressionValue],
-        transport: Option<&TransportInfo>,
-    ) -> Result<ProcessOutput> {
-        if !self.supports_f64 {
+        if T::requires_f64() && !self.supports_f64 {
             return Err(ClapError::ProcessError(format!(
                 "Plugin '{}' does not support 64-bit audio processing \
                  (CLAP_AUDIO_PORT_SUPPORTS_64BITS not set)",
                 self.info.name
             )));
         }
-        self.process_impl(buffer, midi_events, param_changes, note_expressions, transport)
+        let empty_params = ParameterChanges::new();
+        let params = ctx.params.unwrap_or(&empty_params);
+        self.process_impl(buffer, ctx.midi, params, ctx.expressions, ctx.transport)
     }
 
     fn process_impl<T: ClapSample>(

@@ -7,7 +7,7 @@ mod polling;
 mod ports;
 mod state;
 
-pub use audio::ProcessOutput;
+pub use audio::{ClapSample, ProcessContext, ProcessOutput};
 pub use params::ParamMapping;
 
 use crate::cstr_to_string;
