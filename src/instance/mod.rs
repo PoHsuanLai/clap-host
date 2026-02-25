@@ -289,7 +289,6 @@ impl ClapInstance {
 
         let extensions = ExtensionCache::query(plugin);
 
-        // Discover per-port channel counts from the audio-ports extension
         let input_port_channels = Self::port_channels_static(plugin, extensions.audio.ports, true);
         let output_port_channels =
             Self::port_channels_static(plugin, extensions.audio.ports, false);
@@ -297,7 +296,6 @@ impl ClapInstance {
         let audio_inputs: usize = input_port_channels.iter().map(|&c| c as usize).sum();
         let audio_outputs: usize = output_port_channels.iter().map(|&c| c as usize).sum();
 
-        // Check if any output port advertises CLAP_AUDIO_PORT_SUPPORTS_64BITS
         let supports_f64 = Self::check_f64_support(plugin, extensions.audio.ports);
 
         let info = PluginInfo {
@@ -312,7 +310,6 @@ impl ClapInstance {
             audio_outputs: if audio_outputs > 0 { audio_outputs } else { 2 },
         };
 
-        // Default to single stereo port if no port info available
         let input_port_channels = if input_port_channels.is_empty() {
             vec![2]
         } else {
@@ -342,7 +339,6 @@ impl ClapInstance {
         })
     }
 
-    /// Get per-port channel counts (used during load before self exists).
     fn port_channels_static(
         plugin: *const clap_plugin,
         audio_ports: *const clap_plugin_audio_ports,
@@ -371,7 +367,6 @@ impl ClapInstance {
         ports
     }
 
-    /// Check if any output port advertises CLAP_AUDIO_PORT_SUPPORTS_64BITS.
     fn check_f64_support(
         plugin: *const clap_plugin,
         audio_ports: *const clap_plugin_audio_ports,
@@ -412,7 +407,7 @@ impl ClapInstance {
         self.sample_rate
     }
 
-    pub fn max_frames(&self) -> u32 {
+    pub fn block_size(&self) -> u32 {
         self.max_frames
     }
 

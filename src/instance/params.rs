@@ -10,7 +10,6 @@ use clap_sys::ext::param_indication::{
 };
 use std::ptr;
 
-/// Builder for parameter mapping indication.
 #[derive(Debug, Clone)]
 pub struct ParamMapping {
     pub param_id: u32,
@@ -59,7 +58,7 @@ impl ClapInstance {
         }
     }
 
-    pub fn get_parameter(&self, id: u32) -> Option<f64> {
+    pub fn parameter(&self, id: u32) -> Option<f64> {
         if self.extensions.params.params.is_null() {
             return None;
         }
@@ -73,7 +72,7 @@ impl ClapInstance {
         }
     }
 
-    pub fn get_parameter_info(&self, index: u32) -> Option<ParameterInfo> {
+    pub fn parameter_info(&self, index: u32) -> Option<ParameterInfo> {
         if self.extensions.params.params.is_null() {
             return None;
         }
@@ -100,11 +99,9 @@ impl ClapInstance {
         })
     }
 
-    pub fn get_all_parameters(&self) -> Vec<ParameterInfo> {
+    pub fn parameters(&self) -> Vec<ParameterInfo> {
         let count = self.parameter_count() as u32;
-        (0..count)
-            .filter_map(|i| self.get_parameter_info(i))
-            .collect()
+        (0..count).filter_map(|i| self.parameter_info(i)).collect()
     }
 
     /// Flush parameter changes outside of process(). Sends input events to

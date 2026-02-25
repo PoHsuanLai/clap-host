@@ -50,8 +50,6 @@ unsafe impl Send for ClapEvent {}
 unsafe impl Sync for ClapEvent {}
 
 impl ClapEvent {
-    /// Returns a pointer to the header of the underlying C struct.
-    /// The plugin can safely cast this to the full event type.
     pub fn header(&self) -> &clap_event_header {
         match self {
             ClapEvent::NoteOn(e) => &e.header,

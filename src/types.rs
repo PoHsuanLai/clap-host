@@ -139,6 +139,12 @@ impl TransportInfo {
         self.song_pos_seconds = seconds;
         self
     }
+
+    pub fn with_bar(mut self, bar_start: f64, bar_number: i32) -> Self {
+        self.bar_start = bar_start;
+        self.bar_number = bar_number;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -718,4 +724,28 @@ pub struct UndoChange {
     pub name: String,
     pub delta: Vec<u8>,
     pub delta_can_undo: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EditorSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// An opaque handle to a native platform window, for embedding plugin GUIs.
+///
+/// Construct via [`WindowHandle::from_raw`].
+pub struct WindowHandle(*mut std::ffi::c_void);
+
+impl WindowHandle {
+    /// # Safety
+    /// `ptr` must be a valid platform-native view pointer for the target platform
+    /// (NSView on macOS, HWND on Windows, X11 Window ID on Linux).
+    pub unsafe fn from_raw(ptr: *mut std::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+
+    pub fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.0
+    }
 }

@@ -60,8 +60,6 @@ pub(super) unsafe fn get_host_state<'a>(host: *const clap_host) -> Option<&'a Ho
     Some(&*(data as *const HostState))
 }
 
-// ── Lifecycle ──
-
 pub(super) unsafe extern "C" fn host_request_restart(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
         state
@@ -89,8 +87,6 @@ pub(super) unsafe extern "C" fn host_request_callback(host: *const clap_host) {
     }
 }
 
-// ── Thread check ──
-
 pub(super) static HOST_THREAD_CHECK: clap_host_thread_check = clap_host_thread_check {
     is_main_thread: Some(host_thread_check_is_main),
     is_audio_thread: Some(host_thread_check_is_audio),
@@ -115,8 +111,6 @@ unsafe extern "C" fn host_thread_check_is_audio(host: *const clap_host) -> bool 
         None => false,
     }
 }
-
-// ── Log ──
 
 pub(super) static HOST_LOG: clap_host_log = clap_host_log {
     log: Some(host_log),
@@ -143,8 +137,6 @@ unsafe extern "C" fn host_log(
     }
 }
 
-// ── Params ──
-
 pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {
     rescan: Some(host_params_rescan),
     clear: Some(host_params_clear),
@@ -165,8 +157,6 @@ unsafe extern "C" fn host_params_request_flush(host: *const clap_host) {
     }
 }
 
-// ── State ──
-
 pub(super) static HOST_STATE: clap_host_state = clap_host_state {
     mark_dirty: Some(host_state_mark_dirty),
 };
@@ -176,8 +166,6 @@ unsafe extern "C" fn host_state_mark_dirty(host: *const clap_host) {
         state.processing.state_dirty.store(true, Ordering::Release);
     }
 }
-
-// ── Latency ──
 
 pub(super) static HOST_LATENCY: clap_host_latency = clap_host_latency {
     changed: Some(host_latency_changed),
@@ -192,8 +180,6 @@ unsafe extern "C" fn host_latency_changed(host: *const clap_host) {
     }
 }
 
-// ── Tail ──
-
 pub(super) static HOST_TAIL: clap_host_tail = clap_host_tail {
     changed: Some(host_tail_changed),
 };
@@ -203,8 +189,6 @@ unsafe extern "C" fn host_tail_changed(host: *const clap_host) {
         state.processing.tail_changed.store(true, Ordering::Release);
     }
 }
-
-// ── GUI ──
 
 pub(super) static HOST_GUI: clap_host_gui = clap_host_gui {
     resize_hints_changed: Some(host_gui_resize_hints_changed),
@@ -257,8 +241,6 @@ unsafe extern "C" fn host_gui_closed(host: *const clap_host, _was_destroyed: boo
     }
 }
 
-// ── Audio ports ──
-
 pub(super) static HOST_AUDIO_PORTS: clap_host_audio_ports = clap_host_audio_ports {
     is_rescan_flag_supported: Some(host_audio_ports_is_rescan_flag_supported),
     rescan: Some(host_audio_ports_rescan),
@@ -277,8 +259,6 @@ unsafe extern "C" fn host_audio_ports_rescan(host: *const clap_host, _flags: u32
     }
 }
 
-// ── Note ports ──
-
 pub(super) static HOST_NOTE_PORTS: clap_host_note_ports = clap_host_note_ports {
     supported_dialects: Some(host_note_ports_supported_dialects),
     rescan: Some(host_note_ports_rescan),
@@ -293,8 +273,6 @@ unsafe extern "C" fn host_note_ports_rescan(host: *const clap_host, _flags: u32)
         state.notes.ports_changed.store(true, Ordering::Release);
     }
 }
-
-// ── Timer support ──
 
 pub(super) static HOST_TIMER_SUPPORT: clap_host_timer_support = clap_host_timer_support {
     register_timer: Some(host_timer_register),
@@ -339,8 +317,6 @@ unsafe extern "C" fn host_timer_unregister(host: *const clap_host, timer_id: u32
     }
 }
 
-// ── Note name ──
-
 pub(super) static HOST_NOTE_NAME: clap_host_note_name = clap_host_note_name {
     changed: Some(host_note_name_changed),
 };
@@ -350,8 +326,6 @@ unsafe extern "C" fn host_note_name_changed(host: *const clap_host) {
         state.notes.names_changed.store(true, Ordering::Release);
     }
 }
-
-// ── Voice info ──
 
 pub(super) static HOST_VOICE_INFO: clap_host_voice_info = clap_host_voice_info {
     changed: Some(host_voice_info_changed),
@@ -365,8 +339,6 @@ unsafe extern "C" fn host_voice_info_changed(host: *const clap_host) {
             .store(true, Ordering::Release);
     }
 }
-
-// ── Preset load ──
 
 pub(super) static HOST_PRESET_LOAD: clap_host_preset_load = clap_host_preset_load {
     on_error: Some(host_preset_load_on_error),
@@ -397,8 +369,6 @@ unsafe extern "C" fn host_preset_load_loaded(
     }
 }
 
-// ── Audio ports config ──
-
 pub(super) static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config =
     clap_host_audio_ports_config {
         rescan: Some(host_audio_ports_config_rescan),
@@ -412,8 +382,6 @@ unsafe extern "C" fn host_audio_ports_config_rescan(host: *const clap_host) {
             .store(true, Ordering::Release);
     }
 }
-
-// ── Remote controls ──
 
 pub(super) static HOST_REMOTE_CONTROLS: clap_host_remote_controls = clap_host_remote_controls {
     changed: Some(host_remote_controls_changed),
@@ -434,8 +402,6 @@ unsafe extern "C" fn host_remote_controls_suggest_page(host: *const clap_host, p
             .store(page_id, Ordering::Release);
     }
 }
-
-// ── Track info ──
 
 pub(super) static HOST_TRACK_INFO: clap_host_track_info = clap_host_track_info {
     get: Some(host_track_info_get),
@@ -503,8 +469,6 @@ unsafe extern "C" fn host_track_info_get(
     true
 }
 
-// ── Event registry ──
-
 pub(super) static HOST_EVENT_REGISTRY: clap_host_event_registry = clap_host_event_registry {
     query: Some(host_event_registry_query),
 };
@@ -533,8 +497,6 @@ unsafe extern "C" fn host_event_registry_query(
     *space_id = id;
     true
 }
-
-// ── Transport control ──
 
 pub(super) static HOST_TRANSPORT_CONTROL: clap_host_transport_control =
     clap_host_transport_control {
@@ -621,8 +583,6 @@ unsafe extern "C" fn host_transport_request_toggle_record(host: *const clap_host
     push_transport_request(host, TransportRequest::ToggleRecord);
 }
 
-// ── Context menu ──
-
 pub(super) static HOST_CONTEXT_MENU: clap_host_context_menu = clap_host_context_menu {
     populate: Some(host_context_menu_populate),
     perform: Some(host_context_menu_perform),
@@ -660,8 +620,6 @@ unsafe extern "C" fn host_context_menu_popup(
     false
 }
 
-// ── Ambisonic ──
-
 pub(super) static HOST_AMBISONIC: clap_host_ambisonic = clap_host_ambisonic {
     changed: Some(host_ambisonic_changed),
 };
@@ -675,8 +633,6 @@ unsafe extern "C" fn host_ambisonic_changed(host: *const clap_host) {
     }
 }
 
-// ── Surround ──
-
 pub(super) static HOST_SURROUND: clap_host_surround = clap_host_surround {
     changed: Some(host_surround_changed),
 };
@@ -689,8 +645,6 @@ unsafe extern "C" fn host_surround_changed(host: *const clap_host) {
             .store(true, Ordering::Release);
     }
 }
-
-// ── Thread pool ──
 
 pub(super) static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_pool {
     request_exec: Some(host_thread_pool_request_exec),
@@ -708,8 +662,6 @@ unsafe extern "C" fn host_thread_pool_request_exec(host: *const clap_host, num_t
     }
 }
 
-// ── Triggers ──
-
 pub(super) static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {
     rescan: Some(host_triggers_rescan),
     clear: Some(host_triggers_clear),
@@ -725,8 +677,6 @@ unsafe extern "C" fn host_triggers_rescan(host: *const clap_host, _flags: u32) {
 }
 
 unsafe extern "C" fn host_triggers_clear(_host: *const clap_host, _trigger_id: u32, _flags: u32) {}
-
-// ── Tuning ──
 
 pub(super) static HOST_TUNING: clap_host_tuning = clap_host_tuning {
     get_relative: Some(host_tuning_get_relative),
@@ -793,8 +743,6 @@ unsafe extern "C" fn host_tuning_get_info(
     true
 }
 
-// ── Resource directory ──
-
 pub(super) static HOST_RESOURCE_DIRECTORY: clap_host_resource_directory =
     clap_host_resource_directory {
         request_directory: Some(host_resource_request_directory),
@@ -828,8 +776,6 @@ unsafe extern "C" fn host_resource_release_directory(host: *const clap_host, is_
         }
     }
 }
-
-// ── Undo ──
 
 pub(super) static HOST_UNDO: clap_host_undo = clap_host_undo {
     begin_change: Some(host_undo_begin_change),
@@ -898,8 +844,6 @@ unsafe extern "C" fn host_undo_set_wants_context(host: *const clap_host, is_subs
             .store(is_subscribed, Ordering::Release);
     }
 }
-
-// ── POSIX FD support (unix only) ──
 
 #[cfg(unix)]
 pub(super) static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support = clap_host_posix_fd_support {

@@ -45,7 +45,6 @@ pub struct ProcessContext<'a> {
 /// CLAP's `clap_audio_buffer` has separate `data32` and `data64` fields.
 /// Each implementation populates the correct field and nulls the other.
 pub trait ClapSample: Copy + Default + 'static {
-    /// Returns `true` if the plugin must advertise 64-bit support for this type.
     fn requires_f64() -> bool;
 
     fn build_port_buffers(
@@ -116,7 +115,6 @@ impl ClapSample for f64 {
     }
 }
 
-/// Ensure `ptrs` has enough entries for all ports, padding with scratch buffers.
 fn pad_scratch<T: Copy + Default>(
     port_channels: &[u32],
     ptrs: &mut Vec<*mut T>,

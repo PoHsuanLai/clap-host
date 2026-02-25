@@ -9,7 +9,7 @@ use std::path::Path;
 use std::ptr;
 
 impl ClapInstance {
-    pub fn save_state(&self) -> Result<Vec<u8>> {
+    pub fn state(&self) -> Result<Vec<u8>> {
         if self.extensions.state.state.is_null() {
             return Err(ClapError::StateError("No state extension".to_string()));
         }
@@ -26,7 +26,7 @@ impl ClapInstance {
         Ok(stream.into_data())
     }
 
-    pub fn load_state(&mut self, data: &[u8]) -> Result<()> {
+    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -47,9 +47,8 @@ impl ClapInstance {
         Ok(())
     }
 
-    /// Save state with context. Falls back to regular save_state if
-    /// the plugin doesn't support CLAP_EXT_STATE_CONTEXT.
-    pub fn save_state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
+    /// Falls back to `state()` if the plugin doesn't support CLAP_EXT_STATE_CONTEXT.
+    pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         if !self.extensions.state.context.is_null() {
             let ext = unsafe { &*self.extensions.state.context };
             if let Some(save_fn) = ext.save {
@@ -60,13 +59,11 @@ impl ClapInstance {
                 }
             }
         }
-        // Fallback to regular state save
-        self.save_state()
+        self.state()
     }
 
-    /// Load state with context. Falls back to regular load_state if
-    /// the plugin doesn't support CLAP_EXT_STATE_CONTEXT.
-    pub fn load_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
+    /// Falls back to `set_state()` if the plugin doesn't support CLAP_EXT_STATE_CONTEXT.
+    pub fn set_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -80,8 +77,7 @@ impl ClapInstance {
                 }
             }
         }
-        // Fallback to regular state load
-        self.load_state(data)
+        self.set_state(data)
     }
 
     pub fn supports_state_context(&self) -> bool {

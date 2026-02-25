@@ -5,8 +5,8 @@ use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
 use crate::types::{
-    ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
-    TriggerInfo, UndoDeltaProperties,
+    ContextMenuItem, ContextMenuTarget, EditorSize, RemoteControlsPage, TrackInfo,
+    TransportRequest, TriggerInfo, UndoDeltaProperties, WindowHandle,
 };
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
@@ -51,19 +51,17 @@ fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle
 }
 
 impl ClapInstance {
-    // ── GUI ──────────────────────────────────────────────────────────────
-
-    pub fn has_gui(&self) -> bool {
+    pub fn has_editor(&self) -> bool {
         !self.extensions.gui.gui.is_null()
     }
 
-    pub fn open_gui(&mut self, parent: *mut std::ffi::c_void) -> Result<(u32, u32)> {
+    pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         if self.extensions.gui.gui.is_null() {
             return Err(ClapError::GuiError("No GUI extension".to_string()));
         }
         let gui = unsafe { &*self.extensions.gui.gui };
 
-        let (api, window_handle) = platform_window_handle(parent);
+        let (api, window_handle) = platform_window_handle(parent.as_ptr());
 
         if let Some(create_fn) = gui.create {
             if !unsafe { create_fn(self.plugin, api, false) } {
@@ -81,26 +79,35 @@ impl ClapInstance {
             }
         }
 
-        let (width, height) = if let Some(get_size_fn) = gui.get_size {
+        let size = if let Some(get_size_fn) = gui.get_size {
             let mut w: u32 = 0;
             let mut h: u32 = 0;
             if unsafe { get_size_fn(self.plugin, &mut w, &mut h) } {
-                (w, h)
+                EditorSize {
+                    width: w,
+                    height: h,
+                }
             } else {
-                (800, 600)
+                EditorSize {
+                    width: 800,
+                    height: 600,
+                }
             }
         } else {
-            (800, 600)
+            EditorSize {
+                width: 800,
+                height: 600,
+            }
         };
 
         if let Some(show_fn) = gui.show {
             unsafe { show_fn(self.plugin) };
         }
 
-        Ok((width, height))
+        Ok(size)
     }
 
-    pub fn close_gui(&mut self) {
+    pub fn close_editor(&mut self) {
         if self.extensions.gui.gui.is_null() {
             return;
         }
@@ -112,8 +119,6 @@ impl ClapInstance {
             unsafe { destroy_fn(self.plugin) };
         }
     }
-
-    // ── Polling ──────────────────────────────────────────────────────────
 
     pub fn host_state(&self) -> &Arc<HostState> {
         &self.host_state
@@ -270,8 +275,6 @@ impl ClapInstance {
         self
     }
 
-    // ── Track Info ───────────────────────────────────────────────────────
-
     pub fn set_track_info(&self, info: TrackInfo) {
         if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
             *guard = Some(info);
@@ -287,8 +290,6 @@ impl ClapInstance {
             unsafe { f(self.plugin) };
         }
     }
-
-    // ── Remote Controls ──────────────────────────────────────────────────
 
     pub fn remote_controls_page_count(&self) -> usize {
         if self.extensions.params.remote_controls.is_null() {
@@ -319,8 +320,6 @@ impl ClapInstance {
             is_for_preset: page.is_for_preset,
         })
     }
-
-    // ── Context Menu ─────────────────────────────────────────────────────
 
     pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
         if self.extensions.gui.context_menu.is_null() {
@@ -378,8 +377,6 @@ impl ClapInstance {
         unsafe { perform_fn(self.plugin, &clap_target, action_id) }
     }
 
-    // ── Triggers ─────────────────────────────────────────────────────────
-
     pub fn trigger_count(&self) -> usize {
         if self.extensions.system.triggers.is_null() {
             return 0;
@@ -409,8 +406,6 @@ impl ClapInstance {
         })
     }
 
-    // ── Thread Pool ──────────────────────────────────────────────────────
-
     pub fn thread_pool_exec(&self, task_index: u32) {
         if self.extensions.system.thread_pool.is_null() {
             return;
@@ -421,8 +416,6 @@ impl ClapInstance {
         }
     }
 
-    // ── Tuning ───────────────────────────────────────────────────────────
-
     pub fn notify_tuning_changed(&self) {
         if self.extensions.system.tuning.is_null() {
             return;
@@ -432,8 +425,6 @@ impl ClapInstance {
             unsafe { f(self.plugin) };
         }
     }
-
-    // ── Resource Directory ───────────────────────────────────────────────
 
     pub fn resource_set_directory(&self, path: &str, is_shared: bool) {
         if self.extensions.system.resource_directory.is_null() {
@@ -481,8 +472,6 @@ impl ClapInstance {
         }
         Some(unsafe { cstr_to_string(buf.as_ptr()) })
     }
-
-    // ── Undo ─────────────────────────────────────────────────────────────
 
     pub fn undo_get_delta_properties(&self) -> Option<UndoDeltaProperties> {
         if self.extensions.undo.delta.is_null() {
@@ -590,8 +579,6 @@ impl ClapInstance {
         }
     }
 
-    // ── POSIX FDs ────────────────────────────────────────────────────────
-
     #[cfg(unix)]
     pub fn poll_posix_fds(&mut self) -> usize {
         if self.extensions.system.posix_fd_support.is_null() {
@@ -617,8 +604,6 @@ impl ClapInstance {
         fired
     }
 }
-
-// ── Context Menu Builder Callbacks ───────────────────────────────────────
 
 pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     builder: *const clap_context_menu_builder,

@@ -1,8 +1,4 @@
-//! CLAP host implementation.
-//!
-//! Provides the host-side callbacks that plugins use to communicate
-//! with the host application. Supports thread-check, log, params, state,
-//! latency, tail, gui, audio-ports, and note-ports host extensions.
+//! CLAP host implementation providing host-side callbacks for plugin communication.
 
 mod callbacks;
 pub mod state;

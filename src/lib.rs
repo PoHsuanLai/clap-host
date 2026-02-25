@@ -1,21 +1,5 @@
-//! # clap-host
-//!
-//! A Rust library for hosting CLAP audio plugins.
-//!
-//! This crate provides a safe and ergonomic API for loading, configuring, and
-//! processing audio through CLAP plugins. It handles the low-level FFI details,
-//! event list implementations, and host callbacks.
-//!
-//! ## Features
-//!
-//! - Load CLAP plugins from `.clap` bundles (macOS, Linux, Windows)
-//! - Process audio in f32 or f64 format
-//! - Send MIDI events to plugins (converted to CLAP note events)
-//! - Parameter automation with sample-accurate timing
-//! - Note expression (MPE-style per-note control)
-//! - Transport/tempo synchronization
-//! - Plugin state save/load
-//! - Editor window support
+//! Safe, ergonomic API for hosting CLAP audio plugins.
+//! Handles low-level FFI, event list implementations, and host callbacks.
 //!
 //! ## Example
 //!
@@ -55,9 +39,6 @@ pub mod host;
 pub mod instance;
 pub mod types;
 
-/// Convert a nullable C string pointer to an owned `String`.
-/// Returns an empty string if the pointer is null.
-///
 /// # Safety
 /// `ptr` must be null or point to a valid, nul-terminated C string.
 pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
@@ -77,10 +58,10 @@ pub use types::PosixFdFlags;
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortConfigRequest, AudioPortFlags, AudioPortInfo,
-    AudioPortType, ClapMidiEvent, Color, ContextMenuItem, ContextMenuTarget, MidiData, MidiEvent,
-    NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName, NotePortInfo,
-    ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint,
-    ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel, TrackInfo,
-    TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange, UndoDeltaProperties,
-    VoiceInfo,
+    AudioPortType, ClapMidiEvent, Color, ContextMenuItem, ContextMenuTarget, EditorSize, MidiData,
+    MidiEvent, NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName,
+    NotePortInfo, ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo,
+    ParameterPoint, ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel,
+    TrackInfo, TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,
+    UndoDeltaProperties, VoiceInfo, WindowHandle,
 };
