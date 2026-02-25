@@ -3,22 +3,20 @@
 use super::ClapInstance;
 use crate::types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig,
-    AudioPortConfigRequest, AudioPortFlags, AudioPortInfo, AudioPortType, NoteDialect, NoteDialects,
-    NotePortInfo, NoteName, SurroundChannel, VoiceInfo,
+    AudioPortConfigRequest, AudioPortFlags, AudioPortInfo, AudioPortType, NoteDialect,
+    NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
 };
 use clap_sys::ext::ambisonic::{
     clap_ambisonic_config, CLAP_AMBISONIC_NORMALIZATION_MAXN, CLAP_AMBISONIC_NORMALIZATION_N2D,
     CLAP_AMBISONIC_NORMALIZATION_N3D, CLAP_AMBISONIC_NORMALIZATION_SN2D,
-    CLAP_AMBISONIC_NORMALIZATION_SN3D, CLAP_AMBISONIC_ORDERING_ACN,
-    CLAP_AMBISONIC_ORDERING_FUMA,
+    CLAP_AMBISONIC_NORMALIZATION_SN3D, CLAP_AMBISONIC_ORDERING_ACN, CLAP_AMBISONIC_ORDERING_FUMA,
 };
 use clap_sys::ext::audio_ports::{clap_audio_port_info, CLAP_PORT_MONO, CLAP_PORT_STEREO};
 use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
 use clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request;
 use clap_sys::ext::note_name::clap_note_name;
 use clap_sys::ext::note_ports::{
-    clap_note_port_info, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
-    CLAP_NOTE_DIALECT_MIDI_MPE,
+    clap_note_port_info, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI_MPE,
 };
 use clap_sys::ext::render::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
 use clap_sys::ext::voice_info::{clap_voice_info, CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES};

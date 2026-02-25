@@ -2,9 +2,7 @@
 
 use super::ClapInstance;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
-use crate::types::{
-    Color, ParamAutomationState, ParameterFlags, ParameterInfo,
-};
+use crate::types::{Color, ParamAutomationState, ParameterFlags, ParameterInfo};
 use clap_sys::ext::param_indication::{
     CLAP_PARAM_INDICATION_AUTOMATION_NONE, CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
     CLAP_PARAM_INDICATION_AUTOMATION_PLAYING, CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,

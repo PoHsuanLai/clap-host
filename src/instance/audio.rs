@@ -3,9 +3,7 @@
 use super::ClapInstance;
 use crate::error::{ClapError, Result};
 use crate::events::{InputEventList, OutputEventList};
-use crate::types::{
-    AudioBuffer, MidiEvent, NoteExpressionValue, ParameterChanges, TransportInfo,
-};
+use crate::types::{AudioBuffer, MidiEvent, NoteExpressionValue, ParameterChanges, TransportInfo};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
     clap_event_header, clap_event_transport, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT,
@@ -190,11 +188,8 @@ impl ClapInstance {
 
         let mut output_events = OutputEventList::new();
 
-        let mut input_ptrs: Vec<*mut T> = buffer
-            .inputs
-            .iter()
-            .map(|s| s.as_ptr() as *mut T)
-            .collect();
+        let mut input_ptrs: Vec<*mut T> =
+            buffer.inputs.iter().map(|s| s.as_ptr() as *mut T).collect();
         let mut output_ptrs: Vec<*mut T> =
             buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()).collect();
 

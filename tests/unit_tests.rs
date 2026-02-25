@@ -613,7 +613,10 @@ fn test_host_state_poll_clears_flag() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new();
-    state.lifecycle.restart_requested.store(true, Ordering::Release);
+    state
+        .lifecycle
+        .restart_requested
+        .store(true, Ordering::Release);
 
     // First poll returns true and clears
     assert!(state.poll(&state.lifecycle.restart_requested));
@@ -790,13 +793,19 @@ fn test_host_thread_check_audio_thread() {
 
     let (main, audio) = handle.join().unwrap();
     assert!(!main, "Other thread should not be main");
-    assert!(!audio, "Random thread should not be audio (no audio_thread_id set)");
+    assert!(
+        !audio,
+        "Random thread should not be audio (no audio_thread_id set)"
+    );
 
     // Set the audio_thread_id to the current thread, then check
     if let Ok(mut guard) = state2.audio_thread_id.lock() {
         *guard = Some(std::thread::current().id());
     }
-    assert!(unsafe { is_audio(raw) }, "Current thread should be audio after setting audio_thread_id");
+    assert!(
+        unsafe { is_audio(raw) },
+        "Current thread should be audio after setting audio_thread_id"
+    );
 }
 
 // ── Phase 8: Final tests ──
@@ -1097,7 +1106,10 @@ fn test_needs_restart_non_clearing() {
     let state = HostState::new();
     assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
 
-    state.lifecycle.restart_requested.store(true, Ordering::Release);
+    state
+        .lifecycle
+        .restart_requested
+        .store(true, Ordering::Release);
 
     // Non-clearing peek should return true without clearing
     assert!(state.lifecycle.restart_requested.load(Ordering::Acquire));
@@ -1712,9 +1724,15 @@ fn test_host_triggers_rescan_callback() {
     let trig_ptr = unsafe { get_ext(raw, CLAP_EXT_TRIGGERS.as_ptr()) };
     let trig = unsafe { &*(trig_ptr as *const clap_host_triggers) };
 
-    assert!(!state.resources.triggers_rescan_requested.load(Ordering::Acquire));
+    assert!(!state
+        .resources
+        .triggers_rescan_requested
+        .load(Ordering::Acquire));
     unsafe { trig.rescan.unwrap()(raw, 0) };
-    assert!(state.resources.triggers_rescan_requested.load(Ordering::Acquire));
+    assert!(state
+        .resources
+        .triggers_rescan_requested
+        .load(Ordering::Acquire));
 }
 
 // ── Tuning extension tests ──

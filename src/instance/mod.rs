@@ -15,7 +15,9 @@ use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
 use clap_sys::entry::clap_plugin_entry;
-use clap_sys::ext::audio_ports::{clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_SUPPORTS_64BITS};
+use clap_sys::ext::audio_ports::{
+    clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_SUPPORTS_64BITS,
+};
 use clap_sys::plugin::clap_plugin;
 use extensions::ExtensionCache;
 use std::collections::HashMap;
@@ -106,8 +108,9 @@ impl ClapInstance {
         };
 
         // clap_entry is a static exported struct (not a function pointer).
-        // Use get::<*const T> to get a pointer-to-pointer, then dereference once
-        // to get the actual address of the struct in the plugin's data segment.
+        // get::<*const T> yields a Symbol whose Deref gives *const T.
+        // We copy the pointer value out so the Symbol borrow can end,
+        // then convert to a reference that lives as long as _library.
         let entry_struct: &clap_plugin_entry = unsafe {
             let sym = library
                 .get::<*const clap_plugin_entry>(b"clap_entry\0")
@@ -116,11 +119,7 @@ impl ClapInstance {
                     stage: LoadStage::Opening,
                     reason: format!("No clap_entry symbol: {}", e),
                 })?;
-            // sym is Symbol<*const clap_plugin_entry>, which deref's to
-            // &*const clap_plugin_entry (i.e. pointer-to-pointer).
-            // The symbol address *is* the struct, so cast the symbol address itself.
-            let ptr = sym.into_raw();
-            &*(ptr.into_raw() as *const clap_plugin_entry)
+            &*(*sym)
         };
 
         let init_fn = entry_struct.init.ok_or_else(|| ClapError::LoadFailed {

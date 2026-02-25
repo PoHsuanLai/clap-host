@@ -1,4 +1,6 @@
-use super::state::{HostState, PosixFdEntry, TimerEntry};
+#[cfg(unix)]
+use super::state::PosixFdEntry;
+use super::state::{HostState, TimerEntry};
 use crate::types::{TransportRequest, UndoChange};
 use clap_sys::ext::ambisonic::{clap_host_ambisonic, CLAP_PORT_AMBISONIC};
 use clap_sys::ext::audio_ports::{clap_host_audio_ports, CLAP_PORT_MONO, CLAP_PORT_STEREO};
@@ -19,7 +21,9 @@ use clap_sys::ext::log::{
     CLAP_LOG_HOST_MISBEHAVING, CLAP_LOG_INFO, CLAP_LOG_PLUGIN_MISBEHAVING, CLAP_LOG_WARNING,
 };
 use clap_sys::ext::note_name::clap_host_note_name;
-use clap_sys::ext::note_ports::{clap_host_note_ports, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
+use clap_sys::ext::note_ports::{
+    clap_host_note_ports, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
+};
 use clap_sys::ext::params::clap_host_params;
 #[cfg(unix)]
 use clap_sys::ext::posix_fd_support::clap_host_posix_fd_support;
@@ -60,19 +64,28 @@ pub(super) unsafe fn get_host_state<'a>(host: *const clap_host) -> Option<&'a Ho
 
 pub(super) unsafe extern "C" fn host_request_restart(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.lifecycle.restart_requested.store(true, Ordering::Release);
+        state
+            .lifecycle
+            .restart_requested
+            .store(true, Ordering::Release);
     }
 }
 
 pub(super) unsafe extern "C" fn host_request_process(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.lifecycle.process_requested.store(true, Ordering::Release);
+        state
+            .lifecycle
+            .process_requested
+            .store(true, Ordering::Release);
     }
 }
 
 pub(super) unsafe extern "C" fn host_request_callback(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.lifecycle.callback_requested.store(true, Ordering::Release);
+        state
+            .lifecycle
+            .callback_requested
+            .store(true, Ordering::Release);
     }
 }
 
@@ -172,7 +185,10 @@ pub(super) static HOST_LATENCY: clap_host_latency = clap_host_latency {
 
 unsafe extern "C" fn host_latency_changed(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.processing.latency_changed.store(true, Ordering::Release);
+        state
+            .processing
+            .latency_changed
+            .store(true, Ordering::Release);
     }
 }
 
@@ -200,7 +216,10 @@ pub(super) static HOST_GUI: clap_host_gui = clap_host_gui {
 
 unsafe extern "C" fn host_gui_resize_hints_changed(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.gui.resize_hints_changed.store(true, Ordering::Release);
+        state
+            .gui
+            .resize_hints_changed
+            .store(true, Ordering::Release);
     }
 }
 
@@ -210,8 +229,14 @@ unsafe extern "C" fn host_gui_request_resize(
     height: u32,
 ) -> bool {
     if let Some(state) = get_host_state(host) {
-        state.gui.request_resize_width.store(width, Ordering::Release);
-        state.gui.request_resize_height.store(height, Ordering::Release);
+        state
+            .gui
+            .request_resize_width
+            .store(width, Ordering::Release);
+        state
+            .gui
+            .request_resize_height
+            .store(height, Ordering::Release);
         true
     } else {
         false
@@ -334,7 +359,10 @@ pub(super) static HOST_VOICE_INFO: clap_host_voice_info = clap_host_voice_info {
 
 unsafe extern "C" fn host_voice_info_changed(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.notes.voice_info_changed.store(true, Ordering::Release);
+        state
+            .notes
+            .voice_info_changed
+            .store(true, Ordering::Release);
     }
 }
 
@@ -362,7 +390,10 @@ unsafe extern "C" fn host_preset_load_loaded(
     _load_key: *const c_char,
 ) {
     if let Some(state) = get_host_state(host) {
-        state.processing.preset_loaded.store(true, Ordering::Release);
+        state
+            .processing
+            .preset_loaded
+            .store(true, Ordering::Release);
     }
 }
 
@@ -375,7 +406,10 @@ pub(super) static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config =
 
 unsafe extern "C" fn host_audio_ports_config_rescan(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.audio_ports.config_changed.store(true, Ordering::Release);
+        state
+            .audio_ports
+            .config_changed
+            .store(true, Ordering::Release);
     }
 }
 
@@ -394,7 +428,10 @@ unsafe extern "C" fn host_remote_controls_changed(host: *const clap_host) {
 
 unsafe extern "C" fn host_remote_controls_suggest_page(host: *const clap_host, page_id: u32) {
     if let Some(state) = get_host_state(host) {
-        state.remote_controls.suggested_page.store(page_id, Ordering::Release);
+        state
+            .remote_controls
+            .suggested_page
+            .store(page_id, Ordering::Release);
     }
 }
 
@@ -487,9 +524,12 @@ unsafe extern "C" fn host_event_registry_query(
     let Ok(mut spaces) = state.resources.event_spaces.lock() else {
         return false;
     };
-    let id = *spaces
-        .entry(name)
-        .or_insert_with(|| state.resources.next_event_space.fetch_add(1, Ordering::Relaxed));
+    let id = *spaces.entry(name).or_insert_with(|| {
+        state
+            .resources
+            .next_event_space
+            .fetch_add(1, Ordering::Relaxed)
+    });
     *space_id = id;
     true
 }
@@ -628,7 +668,10 @@ pub(super) static HOST_AMBISONIC: clap_host_ambisonic = clap_host_ambisonic {
 
 unsafe extern "C" fn host_ambisonic_changed(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.audio_ports.ambisonic_changed.store(true, Ordering::Release);
+        state
+            .audio_ports
+            .ambisonic_changed
+            .store(true, Ordering::Release);
     }
 }
 
@@ -640,7 +683,10 @@ pub(super) static HOST_SURROUND: clap_host_surround = clap_host_surround {
 
 unsafe extern "C" fn host_surround_changed(host: *const clap_host) {
     if let Some(state) = get_host_state(host) {
-        state.audio_ports.surround_changed.store(true, Ordering::Release);
+        state
+            .audio_ports
+            .surround_changed
+            .store(true, Ordering::Release);
     }
 }
 
@@ -652,7 +698,10 @@ pub(super) static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_poo
 
 unsafe extern "C" fn host_thread_pool_request_exec(host: *const clap_host, num_tasks: u32) -> bool {
     if let Some(state) = get_host_state(host) {
-        state.processing.thread_pool_pending.store(num_tasks, Ordering::Release);
+        state
+            .processing
+            .thread_pool_pending
+            .store(num_tasks, Ordering::Release);
         true
     } else {
         false
@@ -668,7 +717,10 @@ pub(super) static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {
 
 unsafe extern "C" fn host_triggers_rescan(host: *const clap_host, _flags: u32) {
     if let Some(state) = get_host_state(host) {
-        state.resources.triggers_rescan_requested.store(true, Ordering::Release);
+        state
+            .resources
+            .triggers_rescan_requested
+            .store(true, Ordering::Release);
     }
 }
 
@@ -840,19 +892,21 @@ unsafe extern "C" fn host_undo_request_redo(host: *const clap_host) {
 
 unsafe extern "C" fn host_undo_set_wants_context(host: *const clap_host, is_subscribed: bool) {
     if let Some(state) = get_host_state(host) {
-        state.undo.wants_context.store(is_subscribed, Ordering::Release);
+        state
+            .undo
+            .wants_context
+            .store(is_subscribed, Ordering::Release);
     }
 }
 
 // ── POSIX FD support (unix only) ──
 
 #[cfg(unix)]
-pub(super) static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support =
-    clap_host_posix_fd_support {
-        register_fd: Some(host_posix_fd_register),
-        modify_fd: Some(host_posix_fd_modify),
-        unregister_fd: Some(host_posix_fd_unregister),
-    };
+pub(super) static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support = clap_host_posix_fd_support {
+    register_fd: Some(host_posix_fd_register),
+    modify_fd: Some(host_posix_fd_modify),
+    unregister_fd: Some(host_posix_fd_unregister),
+};
 
 #[cfg(unix)]
 unsafe extern "C" fn host_posix_fd_register(host: *const clap_host, fd: i32, flags: u32) -> bool {

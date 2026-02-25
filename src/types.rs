@@ -487,7 +487,9 @@ impl From<StateContext> for clap_sys::ext::state_context::clap_plugin_state_cont
     fn from(ctx: StateContext) -> Self {
         match ctx {
             StateContext::ForPreset => clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PRESET,
-            StateContext::ForProject => clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PROJECT,
+            StateContext::ForProject => {
+                clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_PROJECT
+            }
             StateContext::ForDuplicate => {
                 clap_sys::ext::state_context::CLAP_STATE_CONTEXT_FOR_DUPLICATE
             }

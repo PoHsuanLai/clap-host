@@ -1,6 +1,7 @@
 //! Polling, GUI, context menu, undo, resource, and misc host-interaction methods.
 
 use super::ClapInstance;
+use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
 use crate::types::{
@@ -19,7 +20,6 @@ use clap_sys::ext::draft::triggers::clap_trigger_info;
 use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 use clap_sys::ext::gui::{clap_window, clap_window_handle};
 use clap_sys::ext::remote_controls::clap_remote_controls_page;
-use crate::cstr_to_string;
 use std::ffi::c_void;
 use std::sync::Arc;
 
@@ -46,9 +46,7 @@ fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle
     use clap_sys::ext::gui::CLAP_WINDOW_API_X11;
     (
         CLAP_WINDOW_API_X11.as_ptr(),
-        clap_window_handle {
-            x11: parent as u64,
-        },
+        clap_window_handle { x11: parent as u64 },
     )
 }
 
@@ -122,23 +120,28 @@ impl ClapInstance {
     }
 
     pub fn poll_restart_requested(&self) -> bool {
-        self.host_state.poll(&self.host_state.lifecycle.restart_requested)
+        self.host_state
+            .poll(&self.host_state.lifecycle.restart_requested)
     }
 
     pub fn poll_process_requested(&self) -> bool {
-        self.host_state.poll(&self.host_state.lifecycle.process_requested)
+        self.host_state
+            .poll(&self.host_state.lifecycle.process_requested)
     }
 
     pub fn poll_callback_requested(&self) -> bool {
-        self.host_state.poll(&self.host_state.lifecycle.callback_requested)
+        self.host_state
+            .poll(&self.host_state.lifecycle.callback_requested)
     }
 
     pub fn poll_latency_changed(&self) -> bool {
-        self.host_state.poll(&self.host_state.processing.latency_changed)
+        self.host_state
+            .poll(&self.host_state.processing.latency_changed)
     }
 
     pub fn poll_tail_changed(&self) -> bool {
-        self.host_state.poll(&self.host_state.processing.tail_changed)
+        self.host_state
+            .poll(&self.host_state.processing.tail_changed)
     }
 
     pub fn poll_params_rescan(&self) -> bool {
@@ -152,7 +155,8 @@ impl ClapInstance {
     }
 
     pub fn poll_state_dirty(&self) -> bool {
-        self.host_state.poll(&self.host_state.processing.state_dirty)
+        self.host_state
+            .poll(&self.host_state.processing.state_dirty)
     }
 
     pub fn poll_audio_ports_changed(&self) -> bool {
@@ -248,11 +252,13 @@ impl ClapInstance {
     }
 
     pub fn poll_voice_info_changed(&self) -> bool {
-        self.host_state.poll(&self.host_state.notes.voice_info_changed)
+        self.host_state
+            .poll(&self.host_state.notes.voice_info_changed)
     }
 
     pub fn poll_preset_loaded(&self) -> bool {
-        self.host_state.poll(&self.host_state.processing.preset_loaded)
+        self.host_state
+            .poll(&self.host_state.processing.preset_loaded)
     }
 
     /// Call `plugin.on_main_thread()` when the plugin has requested a main-thread callback.
