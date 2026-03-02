@@ -91,13 +91,25 @@ pub struct ClapInstance {
 unsafe impl Send for ClapInstance {}
 
 impl ClapInstance {
+    /// Load a CLAP plugin from a path that is either a file or a bundle directory.
+    ///
+    /// For pre-resolved library paths, use [`load_with_library`] instead.
     pub fn load(path: impl AsRef<Path>, sample_rate: f64, max_frames: u32) -> Result<Self> {
-        let bundle_path = path.as_ref();
-        // On macOS, .clap plugins are bundles (directories). Resolve to the
-        // actual binary at Contents/MacOS/<stem> for dlopen, but keep the
-        // original bundle path for clap_plugin_entry.init() per CLAP spec.
-        let resolved = resolve_bundle_path(bundle_path);
-        let load_path = resolved.as_deref().unwrap_or(bundle_path);
+        Self::load_with_library(path.as_ref(), None, sample_rate, max_frames)
+    }
+
+    /// Load a CLAP plugin with a pre-resolved library path.
+    ///
+    /// `bundle_path` is the original `.clap` bundle directory (passed to `init()`).
+    /// `library_path` is the resolved binary for dlopen. If `None`, `bundle_path`
+    /// is used for both.
+    pub fn load_with_library(
+        bundle_path: &Path,
+        library_path: Option<&Path>,
+        sample_rate: f64,
+        max_frames: u32,
+    ) -> Result<Self> {
+        let load_path = library_path.unwrap_or(bundle_path);
 
         let library = unsafe {
             libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
@@ -533,27 +545,6 @@ impl Drop for ClapInstance {
     }
 }
 
-/// On macOS, `.clap` plugins are bundles (directories). Resolve to the actual
-/// binary at `<bundle>/Contents/MacOS/<stem>`. Returns `None` if the path is
-/// already a file or we're not on macOS.
-fn resolve_bundle_path(path: &Path) -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        if path.is_dir() {
-            let stem = path.file_stem()?;
-            let binary = path.join("Contents").join("MacOS").join(stem);
-            if binary.is_file() {
-                return Some(binary);
-            }
-        }
-        None
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-        None
-    }
-}
 
 #[cfg(test)]
 mod tests {
