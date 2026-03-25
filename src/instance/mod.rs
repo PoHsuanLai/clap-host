@@ -545,7 +545,6 @@ impl Drop for ClapInstance {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::polling::{context_menu_builder_add_item, context_menu_builder_supports};
