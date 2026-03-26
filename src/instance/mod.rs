@@ -93,7 +93,7 @@ unsafe impl Send for ClapInstance {}
 impl ClapInstance {
     /// Load a CLAP plugin from a path that is either a file or a bundle directory.
     ///
-    /// For pre-resolved library paths, use [`load_with_library`] instead.
+    /// For pre-resolved library paths, use [`Self::load_with_library`] instead.
     pub fn load(path: impl AsRef<Path>, sample_rate: f64, max_frames: u32) -> Result<Self> {
         Self::load_with_library(path.as_ref(), None, sample_rate, max_frames)
     }
