@@ -168,8 +168,6 @@ impl ClapInstance {
         note_expressions: &[NoteExpressionValue],
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutput> {
-        self.start_processing()?;
-
         let num_samples = buffer.num_samples as u32;
 
         let mut input_events = InputEventList::new();
@@ -230,6 +228,10 @@ impl ClapInstance {
         if let Ok(mut guard) = self.host_state.audio_thread_id.lock() {
             *guard = Some(std::thread::current().id());
         }
+
+        // start_processing() must be called after the audio thread ID is recorded,
+        // because plugins check is_audio_thread() inside start_processing().
+        self.start_processing()?;
 
         let clap_transport = transport.map(build_clap_transport);
         let transport_ptr = clap_transport

@@ -85,6 +85,8 @@ pub struct ClapInstance {
     input_port_channels: Vec<u32>,
     /// Per-port channel counts for output ports.
     output_port_channels: Vec<u32>,
+    /// Whether the GUI has been created (and needs destroy on drop).
+    gui_created: bool,
 }
 
 // Safety: CLAP plugins are designed to be called from a single thread
@@ -348,6 +350,7 @@ impl ClapInstance {
             is_processing: false,
             input_port_channels,
             output_port_channels,
+            gui_created: false,
         })
     }
 
@@ -521,6 +524,10 @@ impl ClapInstance {
 
 impl Drop for ClapInstance {
     fn drop(&mut self) {
+        // Destroy GUI before tearing down the plugin — the CLAP spec requires
+        // gui.destroy() before deactivate()/plugin.destroy().
+        self.close_editor();
+
         let plugin_ref = unsafe { &*self.plugin };
 
         if self.is_processing {

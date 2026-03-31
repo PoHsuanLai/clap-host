@@ -67,6 +67,7 @@ impl ClapInstance {
             if !unsafe { create_fn(self.plugin, api, false) } {
                 return Err(ClapError::GuiError("GUI create failed".to_string()));
             }
+            self.gui_created = true;
         }
 
         if let Some(set_parent_fn) = gui.set_parent {
@@ -108,7 +109,7 @@ impl ClapInstance {
     }
 
     pub fn close_editor(&mut self) {
-        if self.extensions.gui.gui.is_null() {
+        if !self.gui_created {
             return;
         }
         let gui = unsafe { &*self.extensions.gui.gui };
@@ -118,6 +119,7 @@ impl ClapInstance {
         if let Some(destroy_fn) = gui.destroy {
             unsafe { destroy_fn(self.plugin) };
         }
+        self.gui_created = false;
     }
 
     pub fn host_state(&self) -> &Arc<HostState> {
