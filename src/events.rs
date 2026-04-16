@@ -4,7 +4,7 @@
 //! `input_events_get` have the correct C memory layout for plugins to cast.
 
 use crate::types::{
-    MidiData, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
+    MidiData, Midi1Event, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
 use clap_sys::events::{
@@ -166,7 +166,7 @@ impl ClapEvent {
         })
     }
 
-    pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
+    pub fn from_midi_event(event: &Midi1Event) -> Option<Self> {
         let time = event.sample_offset as u32;
         let channel = event.channel as i16;
 
@@ -212,9 +212,9 @@ impl ClapEvent {
         }
     }
 
-    pub fn to_midi_event(&self) -> Option<MidiEvent> {
+    pub fn to_midi_event(&self) -> Option<Midi1Event> {
         match self {
-            ClapEvent::NoteOn(e) => Some(MidiEvent {
+            ClapEvent::NoteOn(e) => Some(Midi1Event {
                 sample_offset: e.header.time as i32,
                 channel: e.channel as u8,
                 data: MidiData::NoteOn {
@@ -222,7 +222,7 @@ impl ClapEvent {
                     velocity: e.velocity,
                 },
             }),
-            ClapEvent::NoteOff(e) => Some(MidiEvent {
+            ClapEvent::NoteOff(e) => Some(Midi1Event {
                 sample_offset: e.header.time as i32,
                 channel: e.channel as u8,
                 data: MidiData::NoteOff {
@@ -259,7 +259,7 @@ impl ClapEvent {
                     },
                     _ => return None,
                 };
-                Some(MidiEvent {
+                Some(Midi1Event {
                     sample_offset: e.header.time as i32,
                     channel,
                     data,
@@ -309,14 +309,14 @@ impl InputEventList {
         }
     }
 
-    pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
+    pub fn add_midi(&mut self, event: &Midi1Event) -> &mut Self {
         if let Some(clap_event) = ClapEvent::from_midi_event(event) {
             self.events.push(clap_event);
         }
         self
     }
 
-    pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
+    pub fn add_midi_events(&mut self, events: &[Midi1Event]) -> &mut Self {
         for event in events {
             if let Some(clap_event) = ClapEvent::from_midi_event(event) {
                 self.events.push(clap_event);
@@ -425,7 +425,7 @@ impl OutputEventList {
         std::mem::take(&mut self.events)
     }
 
-    pub fn to_midi_events(&self) -> Vec<MidiEvent> {
+    pub fn to_midi_events(&self) -> Vec<Midi1Event> {
         self.events
             .iter()
             .filter_map(|e| e.to_midi_event())

@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
 use clap_host::{
-    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiData, MidiEvent,
+    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiData, Midi1Event,
     NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
     VoiceInfo,
 };
@@ -17,7 +17,7 @@ use clap_sys::events::{
 
 #[test]
 fn test_note_on_roundtrip() {
-    let midi = MidiEvent::note_on(10, 3, 60, 100);
+    let midi = Midi1Event::note_on(10, 3, 60, 100);
     let clap = ClapEvent::from_midi_event(&midi).unwrap();
     let back = clap.to_midi_event().unwrap();
 
@@ -34,7 +34,7 @@ fn test_note_on_roundtrip() {
 
 #[test]
 fn test_note_off_roundtrip() {
-    let midi = MidiEvent::note_off(20, 5, 72, 64);
+    let midi = Midi1Event::note_off(20, 5, 72, 64);
     let clap = ClapEvent::from_midi_event(&midi).unwrap();
     let back = clap.to_midi_event().unwrap();
 
@@ -51,7 +51,7 @@ fn test_note_off_roundtrip() {
 
 #[test]
 fn test_control_change_roundtrip() {
-    let midi = MidiEvent::control_change(5, 2, 74, 100);
+    let midi = Midi1Event::control_change(5, 2, 74, 100);
     let clap = ClapEvent::from_midi_event(&midi).unwrap();
     let back = clap.to_midi_event().unwrap();
 
@@ -68,7 +68,7 @@ fn test_control_change_roundtrip() {
 
 #[test]
 fn test_pitch_bend_roundtrip() {
-    let midi = MidiEvent::pitch_bend(0, 0, 8192);
+    let midi = Midi1Event::pitch_bend(0, 0, 8192);
     let clap = ClapEvent::from_midi_event(&midi).unwrap();
     let back = clap.to_midi_event().unwrap();
 
@@ -82,7 +82,7 @@ fn test_pitch_bend_roundtrip() {
 
 #[test]
 fn test_program_change_roundtrip() {
-    let midi = MidiEvent::program_change(100, 9, 42);
+    let midi = Midi1Event::program_change(100, 9, 42);
     let clap = ClapEvent::from_midi_event(&midi).unwrap();
     let back = clap.to_midi_event().unwrap();
 
@@ -99,8 +99,8 @@ fn test_program_change_roundtrip() {
 #[test]
 fn test_input_event_list_ffi_size_and_get() {
     let mut list = InputEventList::new();
-    list.add_midi(&MidiEvent::note_on(0, 0, 60, 100));
-    list.add_midi(&MidiEvent::note_off(100, 0, 60, 0));
+    list.add_midi(&Midi1Event::note_on(0, 0, 60, 100));
+    list.add_midi(&Midi1Event::note_off(100, 0, 60, 0));
 
     let raw = list.as_raw();
     unsafe {
@@ -198,9 +198,9 @@ fn test_output_event_list_push_param_value() {
 #[test]
 fn test_input_event_list_sort_by_time() {
     let mut list = InputEventList::new();
-    list.add_midi(&MidiEvent::note_on(200, 0, 60, 100));
-    list.add_midi(&MidiEvent::note_on(50, 0, 64, 80));
-    list.add_midi(&MidiEvent::note_on(100, 0, 67, 90));
+    list.add_midi(&Midi1Event::note_on(200, 0, 60, 100));
+    list.add_midi(&Midi1Event::note_on(50, 0, 64, 80));
+    list.add_midi(&Midi1Event::note_on(100, 0, 67, 90));
     list.sort_by_time();
 
     let events = list.events();

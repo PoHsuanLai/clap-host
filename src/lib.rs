@@ -4,7 +4,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
+//! use clap_host::{ClapInstance, Midi1Event, ProcessContext, TransportInfo};
 //!
 //! // Load a CLAP plugin
 //! let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
@@ -15,7 +15,7 @@
 //! // Process audio with MIDI
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
 //! plugin.process(&mut buffer, &ProcessContext {
-//!     midi: &[MidiEvent::note_on(0, 0, 60, 100)],
+//!     midi: &[Midi1Event::note_on(0, 0, 60, 100)],
 //!     transport: Some(&transport),
 //!     ..Default::default()
 //! })?;
@@ -59,7 +59,7 @@ pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortConfigRequest, AudioPortFlags, AudioPortInfo,
     AudioPortType, ClapMidiEvent, Color, ContextMenuItem, ContextMenuTarget, EditorSize, MidiData,
-    MidiEvent, NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName,
+    Midi1Event, NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName,
     NotePortInfo, ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo,
     ParameterPoint, ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel,
     TrackInfo, TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,

@@ -148,7 +148,7 @@ impl TransportInfo {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MidiEvent {
+pub struct Midi1Event {
     pub sample_offset: i32,
     pub channel: u8,
     pub data: MidiData,
@@ -165,7 +165,7 @@ pub enum MidiData {
     PitchBend { value: u16 },
 }
 
-impl MidiEvent {
+impl Midi1Event {
     pub fn note_on(sample_offset: i32, channel: u8, key: u8, velocity: u8) -> Self {
         Self {
             sample_offset,
@@ -219,7 +219,7 @@ pub trait ClapMidiEvent {
     fn to_midi_data(&self) -> Option<MidiData>;
 }
 
-impl ClapMidiEvent for MidiEvent {
+impl ClapMidiEvent for Midi1Event {
     fn sample_offset(&self) -> i32 {
         self.sample_offset
     }
