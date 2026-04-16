@@ -93,6 +93,151 @@ pub struct ClapInstance {
 unsafe impl Send for ClapInstance {}
 
 impl ClapInstance {
+    /// Lightweight probe: read the CLAP descriptor without creating or initializing
+    /// the plugin instance. Returns name, vendor, features (for instrument detection).
+    pub fn probe(bundle_path: &Path, library_path: Option<&Path>) -> Result<PluginInfo> {
+        let load_path = library_path.unwrap_or(bundle_path);
+
+        let library = unsafe {
+            libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Opening,
+                reason: format!("Failed to load library: {}", e),
+            })?
+        };
+
+        let entry_struct: &clap_plugin_entry = unsafe {
+            let sym = library
+                .get::<*const clap_plugin_entry>(b"clap_entry\0")
+                .map_err(|e| ClapError::LoadFailed {
+                    path: bundle_path.to_path_buf(),
+                    stage: LoadStage::Opening,
+                    reason: format!("No clap_entry symbol: {}", e),
+                })?;
+            &*(*sym)
+        };
+
+        let init_fn = entry_struct.init.ok_or_else(|| ClapError::LoadFailed {
+            path: bundle_path.to_path_buf(),
+            stage: LoadStage::Opening,
+            reason: "No init function".to_string(),
+        })?;
+
+        let path_cstr =
+            std::ffi::CString::new(bundle_path.to_string_lossy().as_ref()).map_err(|e| {
+                ClapError::LoadFailed {
+                    path: bundle_path.to_path_buf(),
+                    stage: LoadStage::Opening,
+                    reason: format!("Invalid path: {}", e),
+                }
+            })?;
+
+        let _entry_guard =
+            entry_registry_acquire(bundle_path, init_fn, &path_cstr).map_err(|reason| {
+                ClapError::LoadFailed {
+                    path: bundle_path.to_path_buf(),
+                    stage: LoadStage::Opening,
+                    reason,
+                }
+            })?;
+
+        let get_factory_fn = entry_struct
+            .get_factory
+            .ok_or_else(|| ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Factory,
+                reason: "No get_factory function".to_string(),
+            })?;
+
+        let factory_ptr = unsafe {
+            get_factory_fn(clap_sys::factory::plugin_factory::CLAP_PLUGIN_FACTORY_ID.as_ptr())
+        };
+
+        if factory_ptr.is_null() {
+            return Err(ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Factory,
+                reason: "No plugin factory".to_string(),
+            });
+        }
+
+        let factory = unsafe {
+            &*(factory_ptr as *const clap_sys::factory::plugin_factory::clap_plugin_factory)
+        };
+
+        let get_count_fn = factory
+            .get_plugin_count
+            .ok_or_else(|| ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Factory,
+                reason: "No get_plugin_count function".to_string(),
+            })?;
+
+        let plugin_count = unsafe { get_count_fn(factory_ptr as *const _) };
+        if plugin_count == 0 {
+            return Err(ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Factory,
+                reason: "No plugins in factory".to_string(),
+            });
+        }
+
+        let get_desc_fn = factory
+            .get_plugin_descriptor
+            .ok_or_else(|| ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Factory,
+                reason: "No get_plugin_descriptor function".to_string(),
+            })?;
+
+        let desc_ptr = unsafe { get_desc_fn(factory_ptr as *const _, 0) };
+        if desc_ptr.is_null() {
+            return Err(ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Factory,
+                reason: "No plugin descriptor".to_string(),
+            });
+        }
+
+        let descriptor = unsafe { &*desc_ptr };
+
+        let plugin_id = unsafe { std::ffi::CStr::from_ptr(descriptor.id) }
+            .to_string_lossy()
+            .into_owned();
+        let name = unsafe { std::ffi::CStr::from_ptr(descriptor.name) }
+            .to_string_lossy()
+            .into_owned();
+        let vendor = unsafe { std::ffi::CStr::from_ptr(descriptor.vendor) }
+            .to_string_lossy()
+            .into_owned();
+        let version = unsafe { std::ffi::CStr::from_ptr(descriptor.version) }
+            .to_string_lossy()
+            .into_owned();
+        let url = unsafe { cstr_to_string(descriptor.url) };
+        let description = unsafe { cstr_to_string(descriptor.description) };
+
+        let features = if descriptor.features.is_null() {
+            Vec::new()
+        } else {
+            let mut features = Vec::new();
+            let mut ptr = descriptor.features;
+            unsafe {
+                while !(*ptr).is_null() && features.len() < 256 {
+                    features.push(std::ffi::CStr::from_ptr(*ptr).to_string_lossy().into_owned());
+                    ptr = ptr.add(1);
+                }
+            }
+            features
+        };
+
+        Ok(PluginInfo::new(plugin_id, name)
+            .vendor(vendor)
+            .version(version)
+            .url(url)
+            .description(description)
+            .features(features))
+    }
+
     /// Load a CLAP plugin from a path that is either a file or a bundle directory.
     ///
     /// For pre-resolved library paths, use [`Self::load_with_library`] instead.
