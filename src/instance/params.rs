@@ -1,5 +1,6 @@
 //! Parameter methods for ClapInstance.
 
+use super::ext;
 use super::ClapInstance;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{Color, ParamAutomationState, ParameterFlags, ParameterInfo};
@@ -46,52 +47,46 @@ impl ParamMapping {
     }
 }
 
+fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
+    clap_sys::color::clap_color {
+        alpha: color.alpha,
+        red: color.red,
+        green: color.green,
+        blue: color.blue,
+    }
+}
+
 impl ClapInstance {
     pub fn parameter_count(&self) -> usize {
-        if self.extensions.params.params.is_null() {
+        let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
             return 0;
-        }
-        let params = unsafe { &*self.extensions.params.params };
-        match params.count {
-            Some(f) => (unsafe { f(self.plugin) }) as usize,
-            None => 0,
-        }
+        };
+        let Some(count_fn) = ext.count else {
+            return 0;
+        };
+        unsafe { count_fn(self.plugin.as_ptr()) as usize }
     }
 
     pub fn parameter(&self, id: u32) -> Option<f64> {
-        if self.extensions.params.params.is_null() {
-            return None;
-        }
-        let params = unsafe { &*self.extensions.params.params };
-        let get_value_fn = params.get_value?;
+        let ext = unsafe { ext::opt(self.extensions.params.params) }?;
+        let get_value_fn = ext.get_value?;
         let mut value: f64 = 0.0;
-        if unsafe { get_value_fn(self.plugin, id, &mut value) } {
-            Some(value)
-        } else {
-            None
-        }
+        unsafe { get_value_fn(self.plugin.as_ptr(), id, &mut value) }.then_some(value)
     }
 
     pub fn parameter_info(&self, index: u32) -> Option<ParameterInfo> {
-        if self.extensions.params.params.is_null() {
-            return None;
-        }
-        let params = unsafe { &*self.extensions.params.params };
-        let get_info_fn = params.get_info?;
+        let ext = unsafe { ext::opt(self.extensions.params.params) }?;
+        let get_info_fn = ext.get_info?;
 
         let mut info: clap_sys::ext::params::clap_param_info = unsafe { std::mem::zeroed() };
-
-        if !unsafe { get_info_fn(self.plugin, index, &mut info) } {
+        if !unsafe { get_info_fn(self.plugin.as_ptr(), index, &mut info) } {
             return None;
         }
-
-        let name = unsafe { crate::cstr_to_string(info.name.as_ptr()) };
-        let module = unsafe { crate::cstr_to_string(info.module.as_ptr()) };
 
         Some(ParameterInfo {
             id: info.id,
-            name,
-            module,
+            name: unsafe { crate::cstr_to_string(info.name.as_ptr()) },
+            module: unsafe { crate::cstr_to_string(info.module.as_ptr()) },
             min_value: info.min_value,
             max_value: info.max_value,
             default_value: info.default_value,
@@ -107,23 +102,20 @@ impl ClapInstance {
     /// Flush parameter changes outside of process(). Sends input events to
     /// the plugin and collects any output events it produces.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
-        if self.extensions.params.params.is_null() {
+        let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
             return Vec::new();
-        }
-        let params = unsafe { &*self.extensions.params.params };
-        let flush_fn = match params.flush {
-            Some(f) => f,
-            None => return Vec::new(),
+        };
+        let Some(flush_fn) = ext.flush else {
+            return Vec::new();
         };
 
         let mut input_list = InputEventList::from_events(input_events);
         input_list.sort_by_time();
-
         let mut output_list = OutputEventList::new();
 
         unsafe {
             flush_fn(
-                self.plugin,
+                self.plugin.as_ptr(),
                 input_list.as_raw() as *const _,
                 output_list.as_raw_mut() as *const _,
             );
@@ -134,49 +126,36 @@ impl ClapInstance {
 
     /// Set a single parameter value immediately via flush.
     pub fn set_parameter(&mut self, id: u32, value: f64) -> &mut Self {
-        let event = ClapEvent::param_value(0, id, value);
-        self.flush_params(vec![event]);
+        self.flush_params(vec![ClapEvent::param_value(0, id, value)]);
         self
     }
 
     pub fn set_param_mapping(&self, mapping: &ParamMapping) {
-        if self.extensions.params.indication.is_null() {
+        let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
             return;
-        }
-        let ext = unsafe { &*self.extensions.params.indication };
-        let set_mapping = match ext.set_mapping {
-            Some(f) => f,
-            None => return,
         };
-        let clap_color = mapping.color.map(|c| clap_sys::color::clap_color {
-            alpha: c.alpha,
-            red: c.red,
-            green: c.green,
-            blue: c.blue,
-        });
-        let color_ptr = clap_color
-            .as_ref()
-            .map(|c| c as *const _)
-            .unwrap_or(ptr::null());
+        let Some(set_mapping) = ext.set_mapping else {
+            return;
+        };
+
+        let clap_color = mapping.color.map(color_to_clap);
+        let color_ptr = clap_color.as_ref().map_or(ptr::null(), |c| c as *const _);
+
         let label_cstr = mapping
             .label
             .as_deref()
             .and_then(|s| std::ffi::CString::new(s).ok());
-        let label_ptr = label_cstr
-            .as_ref()
-            .map(|c| c.as_ptr())
-            .unwrap_or(ptr::null());
+        let label_ptr = label_cstr.as_ref().map_or(ptr::null(), |c| c.as_ptr());
+
         let desc_cstr = mapping
             .description
             .as_deref()
             .and_then(|s| std::ffi::CString::new(s).ok());
-        let desc_ptr = desc_cstr
-            .as_ref()
-            .map(|c| c.as_ptr())
-            .unwrap_or(ptr::null());
+        let desc_ptr = desc_cstr.as_ref().map_or(ptr::null(), |c| c.as_ptr());
+
         unsafe {
             set_mapping(
-                self.plugin,
+                self.plugin.as_ptr(),
                 mapping.param_id,
                 mapping.has_mapping,
                 color_ptr,
@@ -192,14 +171,13 @@ impl ClapInstance {
         state: ParamAutomationState,
         color: Option<Color>,
     ) {
-        if self.extensions.params.indication.is_null() {
+        let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
             return;
-        }
-        let ext = unsafe { &*self.extensions.params.indication };
-        let set_automation = match ext.set_automation {
-            Some(f) => f,
-            None => return,
         };
+        let Some(set_automation) = ext.set_automation else {
+            return;
+        };
+
         let automation_state = match state {
             ParamAutomationState::None => CLAP_PARAM_INDICATION_AUTOMATION_NONE,
             ParamAutomationState::Present => CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
@@ -207,16 +185,9 @@ impl ClapInstance {
             ParamAutomationState::Recording => CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
             ParamAutomationState::Overriding => CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
         };
-        let clap_color = color.map(|c| clap_sys::color::clap_color {
-            alpha: c.alpha,
-            red: c.red,
-            green: c.green,
-            blue: c.blue,
-        });
-        let color_ptr = clap_color
-            .as_ref()
-            .map(|c| c as *const _)
-            .unwrap_or(ptr::null());
-        unsafe { set_automation(self.plugin, param_id, automation_state, color_ptr) };
+        let clap_color = color.map(color_to_clap);
+        let color_ptr = clap_color.as_ref().map_or(ptr::null(), |c| c as *const _);
+
+        unsafe { set_automation(self.plugin.as_ptr(), param_id, automation_state, color_ptr) };
     }
 }

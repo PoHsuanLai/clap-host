@@ -32,7 +32,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.ports };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin, is_input) }) as usize,
+            Some(f) => (unsafe { f(self.plugin.as_ptr(), is_input) }) as usize,
             None => 0,
         }
     }
@@ -45,7 +45,7 @@ impl ClapInstance {
         let get_fn = ext.get?;
 
         let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, index as u32, is_input, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, is_input, &mut info) } {
             return None;
         }
 
@@ -94,7 +94,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.notes.ports };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin, is_input) }) as usize,
+            Some(f) => (unsafe { f(self.plugin.as_ptr(), is_input) }) as usize,
             None => 0,
         }
     }
@@ -107,7 +107,7 @@ impl ClapInstance {
         let get_fn = ext.get?;
 
         let mut info: clap_note_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, index as u32, is_input, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, is_input, &mut info) } {
             return None;
         }
 
@@ -135,7 +135,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.ports_config };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin) }) as usize,
+            Some(f) => (unsafe { f(self.plugin.as_ptr()) }) as usize,
             None => 0,
         }
     }
@@ -148,7 +148,7 @@ impl ClapInstance {
         let get_fn = ext.get?;
 
         let mut config: clap_audio_ports_config = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, index as u32, &mut config) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, &mut config) } {
             return None;
         }
 
@@ -170,7 +170,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.ports_config };
         match ext.select {
-            Some(f) => unsafe { f(self.plugin, config_id) },
+            Some(f) => unsafe { f(self.plugin.as_ptr(), config_id) },
             None => false,
         }
     }
@@ -181,7 +181,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.latency };
         match ext.get {
-            Some(f) => unsafe { f(self.plugin) },
+            Some(f) => unsafe { f(self.plugin.as_ptr()) },
             None => 0,
         }
     }
@@ -192,7 +192,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.tail };
         match ext.get {
-            Some(f) => unsafe { f(self.plugin) },
+            Some(f) => unsafe { f(self.plugin.as_ptr()) },
             None => 0,
         }
     }
@@ -209,7 +209,7 @@ impl ClapInstance {
                 } else {
                     CLAP_RENDER_REALTIME
                 };
-                unsafe { f(self.plugin, mode) }
+                unsafe { f(self.plugin.as_ptr(), mode) }
             }
             None => false,
         }
@@ -221,7 +221,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.render };
         match ext.has_hard_realtime_requirement {
-            Some(f) => unsafe { f(self.plugin) },
+            Some(f) => unsafe { f(self.plugin.as_ptr()) },
             None => false,
         }
     }
@@ -233,7 +233,7 @@ impl ClapInstance {
         let ext = unsafe { &*self.extensions.system.voice_info };
         let get_fn = ext.get?;
         let mut info: clap_voice_info = unsafe { std::mem::zeroed() };
-        if unsafe { get_fn(self.plugin, &mut info) } {
+        if unsafe { get_fn(self.plugin.as_ptr(), &mut info) } {
             Some(VoiceInfo {
                 voice_count: info.voice_count,
                 voice_capacity: info.voice_capacity,
@@ -252,7 +252,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.notes.name };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin) }) as usize,
+            Some(f) => (unsafe { f(self.plugin.as_ptr()) }) as usize,
             None => 0,
         }
     }
@@ -264,7 +264,7 @@ impl ClapInstance {
         let ext = unsafe { &*self.extensions.notes.name };
         let get_fn = ext.get?;
         let mut info: clap_note_name = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, index as u32, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, &mut info) } {
             return None;
         }
         Some(NoteName {
@@ -287,7 +287,7 @@ impl ClapInstance {
         let clap_requests = build_port_config_requests(requests);
         unsafe {
             can_apply_fn(
-                self.plugin,
+                self.plugin.as_ptr(),
                 clap_requests.as_ptr(),
                 clap_requests.len() as u32,
             )
@@ -306,7 +306,7 @@ impl ClapInstance {
         let clap_requests = build_port_config_requests(requests);
         unsafe {
             apply_fn(
-                self.plugin,
+                self.plugin.as_ptr(),
                 clap_requests.as_ptr(),
                 clap_requests.len() as u32,
             )
@@ -319,7 +319,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.ports_activation };
         match ext.can_activate_while_processing {
-            Some(f) => unsafe { f(self.plugin) },
+            Some(f) => unsafe { f(self.plugin.as_ptr()) },
             None => false,
         }
     }
@@ -336,7 +336,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.ports_activation };
         match ext.set_active {
-            Some(f) => unsafe { f(self.plugin, is_input, port_index, is_active, sample_size) },
+            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input, port_index, is_active, sample_size) },
             None => false,
         }
     }
@@ -360,7 +360,7 @@ impl ClapInstance {
             .as_ref()
             .map(|c| c.as_ptr())
             .unwrap_or(ptr::null());
-        unsafe { add_fn(self.plugin, is_input, channel_count, type_ptr, ptr::null()) }
+        unsafe { add_fn(self.plugin.as_ptr(), is_input, channel_count, type_ptr, ptr::null()) }
     }
 
     pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
@@ -369,7 +369,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.extensible_ports };
         match ext.remove_port {
-            Some(f) => unsafe { f(self.plugin, is_input, index) },
+            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input, index) },
             None => false,
         }
     }
@@ -396,7 +396,7 @@ impl ClapInstance {
                 AmbisonicNormalization::N2d => CLAP_AMBISONIC_NORMALIZATION_N2D,
             },
         };
-        unsafe { f(self.plugin, &clap_config) }
+        unsafe { f(self.plugin.as_ptr(), &clap_config) }
     }
 
     pub fn get_ambisonic_config(&self, is_input: bool, port_index: u32) -> Option<AmbisonicConfig> {
@@ -406,7 +406,7 @@ impl ClapInstance {
         let ext = unsafe { &*self.extensions.audio.ambisonic };
         let get_fn = ext.get_config?;
         let mut config: clap_ambisonic_config = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, is_input, port_index, &mut config) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), is_input, port_index, &mut config) } {
             return None;
         }
         let ordering = match config.ordering {
@@ -432,7 +432,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.surround };
         match ext.is_channel_mask_supported {
-            Some(f) => unsafe { f(self.plugin, channel_mask) },
+            Some(f) => unsafe { f(self.plugin.as_ptr(), channel_mask) },
             None => false,
         }
     }
@@ -449,7 +449,7 @@ impl ClapInstance {
         let get_fn = ext.get_channel_map?;
         let mut map = [0u8; 64];
         let count =
-            unsafe { get_fn(self.plugin, is_input, port_index, map.as_mut_ptr(), 64) } as usize;
+            unsafe { get_fn(self.plugin.as_ptr(), is_input, port_index, map.as_mut_ptr(), 64) } as usize;
         if count == 0 || count > map.len() {
             return None;
         }

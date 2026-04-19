@@ -1,27 +1,33 @@
 //! CLAP plugin instance.
 
 mod audio;
+mod config;
+mod descriptor;
+mod ext;
 mod extensions;
+mod handle;
 mod params;
 mod polling;
 mod ports;
+mod resources;
 mod state;
+mod undo;
 
 pub use audio::{ClapSample, ProcessContext, ProcessOutput};
 pub use params::ParamMapping;
 
-use crate::cstr_to_string;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
-use clap_sys::entry::clap_plugin_entry;
 use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_SUPPORTS_64BITS,
 };
 use clap_sys::plugin::clap_plugin;
+use config::{AudioConfig, LifecycleFlags, PortLayout};
+use descriptor::load_descriptor;
 use extensions::ExtensionCache;
+use handle::PluginHandle;
 use std::collections::HashMap;
-use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -38,14 +44,14 @@ static ENTRY_REGISTRY: Mutex<Option<HashMap<PathBuf, bool>>> = Mutex::new(None);
 
 /// RAII guard for CLAP entry lifetime. Does not call deinit on drop — the
 /// entry stays initialized for the lifetime of the process.
-struct EntryGuard {
+pub(crate) struct EntryGuard {
     _path: PathBuf,
 }
 
 /// Register a CLAP entry for the given path.
 /// Calls `init_fn` only on the first load of a given library. Subsequent
 /// loads of the same library skip init (the entry is already initialized).
-fn entry_registry_acquire(
+pub(crate) fn entry_registry_acquire(
     path: &Path,
     init_fn: unsafe extern "C" fn(*const i8) -> bool,
     path_cstr: &std::ffi::CString,
@@ -66,35 +72,28 @@ fn entry_registry_acquire(
 }
 
 pub struct ClapInstance {
-    plugin: *const clap_plugin,
-    // IMPORTANT: Drop order matters! Fields are dropped top-to-bottom.
-    // _entry_guard must be dropped BEFORE _library so that deinit() is
-    // called while the library is still loaded in memory.
+    // IMPORTANT: Drop order matters! Fields drop top-to-bottom.
+    // `plugin` drops first so the plugin can still access the host while
+    // destroy() runs; `_entry_guard` drops before `_library` so deinit()
+    // runs while the library is still mapped.
+    pub(crate) plugin: PluginHandle,
     _entry_guard: EntryGuard,
     _library: libloading::Library,
     _host: Box<ClapHost>,
-    host_state: Arc<HostState>,
-    extensions: ExtensionCache,
-    info: PluginInfo,
-    supports_f64: bool,
-    sample_rate: f64,
-    max_frames: u32,
-    is_active: bool,
-    is_processing: bool,
-    /// Per-port channel counts for input ports (e.g. [2] for stereo, [2, 2] for two stereo ports).
-    input_port_channels: Vec<u32>,
-    /// Per-port channel counts for output ports.
-    output_port_channels: Vec<u32>,
-    /// Whether the GUI has been created (and needs destroy on drop).
-    gui_created: bool,
+    pub(crate) host_state: Arc<HostState>,
+    pub(crate) extensions: ExtensionCache,
+    pub(crate) info: PluginInfo,
+    pub(crate) audio: AudioConfig,
+    pub(crate) ports: PortLayout,
+    pub(crate) flags: LifecycleFlags,
 }
 
 // Safety: CLAP plugins are designed to be called from a single thread
 unsafe impl Send for ClapInstance {}
 
 impl ClapInstance {
-    /// Lightweight probe: read the CLAP descriptor without creating or initializing
-    /// the plugin instance. Returns name, vendor, features (for instrument detection).
+    /// Lightweight probe: read the CLAP descriptor without creating or
+    /// initializing the plugin instance.
     pub fn probe(bundle_path: &Path, library_path: Option<&Path>) -> Result<PluginInfo> {
         let load_path = library_path.unwrap_or(bundle_path);
 
@@ -102,145 +101,18 @@ impl ClapInstance {
             libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Opening,
-                reason: format!("Failed to load library: {}", e),
+                reason: format!("Failed to load library: {e}"),
             })?
         };
 
-        let entry_struct: &clap_plugin_entry = unsafe {
-            let sym = library
-                .get::<*const clap_plugin_entry>(b"clap_entry\0")
-                .map_err(|e| ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: format!("No clap_entry symbol: {}", e),
-                })?;
-            &*(*sym)
-        };
-
-        let init_fn = entry_struct.init.ok_or_else(|| ClapError::LoadFailed {
-            path: bundle_path.to_path_buf(),
-            stage: LoadStage::Opening,
-            reason: "No init function".to_string(),
-        })?;
-
-        let path_cstr =
-            std::ffi::CString::new(bundle_path.to_string_lossy().as_ref()).map_err(|e| {
-                ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: format!("Invalid path: {}", e),
-                }
-            })?;
-
-        let _entry_guard =
-            entry_registry_acquire(bundle_path, init_fn, &path_cstr).map_err(|reason| {
-                ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason,
-                }
-            })?;
-
-        let get_factory_fn = entry_struct
-            .get_factory
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No get_factory function".to_string(),
-            })?;
-
-        let factory_ptr = unsafe {
-            get_factory_fn(clap_sys::factory::plugin_factory::CLAP_PLUGIN_FACTORY_ID.as_ptr())
-        };
-
-        if factory_ptr.is_null() {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No plugin factory".to_string(),
-            });
-        }
-
-        let factory = unsafe {
-            &*(factory_ptr as *const clap_sys::factory::plugin_factory::clap_plugin_factory)
-        };
-
-        let get_count_fn = factory
-            .get_plugin_count
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No get_plugin_count function".to_string(),
-            })?;
-
-        let plugin_count = unsafe { get_count_fn(factory_ptr as *const _) };
-        if plugin_count == 0 {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No plugins in factory".to_string(),
-            });
-        }
-
-        let get_desc_fn = factory
-            .get_plugin_descriptor
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No get_plugin_descriptor function".to_string(),
-            })?;
-
-        let desc_ptr = unsafe { get_desc_fn(factory_ptr as *const _, 0) };
-        if desc_ptr.is_null() {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No plugin descriptor".to_string(),
-            });
-        }
-
-        let descriptor = unsafe { &*desc_ptr };
-
-        let plugin_id = unsafe { std::ffi::CStr::from_ptr(descriptor.id) }
-            .to_string_lossy()
-            .into_owned();
-        let name = unsafe { std::ffi::CStr::from_ptr(descriptor.name) }
-            .to_string_lossy()
-            .into_owned();
-        let vendor = unsafe { std::ffi::CStr::from_ptr(descriptor.vendor) }
-            .to_string_lossy()
-            .into_owned();
-        let version = unsafe { std::ffi::CStr::from_ptr(descriptor.version) }
-            .to_string_lossy()
-            .into_owned();
-        let url = unsafe { cstr_to_string(descriptor.url) };
-        let description = unsafe { cstr_to_string(descriptor.description) };
-
-        let features = if descriptor.features.is_null() {
-            Vec::new()
-        } else {
-            let mut features = Vec::new();
-            let mut ptr = descriptor.features;
-            unsafe {
-                while !(*ptr).is_null() && features.len() < 256 {
-                    features.push(std::ffi::CStr::from_ptr(*ptr).to_string_lossy().into_owned());
-                    ptr = ptr.add(1);
-                }
-            }
-            features
-        };
-
-        Ok(PluginInfo::new(plugin_id, name)
-            .vendor(vendor)
-            .version(version)
-            .url(url)
-            .description(description)
-            .features(features))
+        let loaded = load_descriptor(&library, bundle_path)?;
+        let info = loaded.info;
+        drop(loaded.entry_guard); // drop order: guard before library
+        drop(library);
+        Ok(info)
     }
 
     /// Load a CLAP plugin from a path that is either a file or a bundle directory.
-    ///
-    /// For pre-resolved library paths, use [`Self::load_with_library`] instead.
     pub fn load(path: impl AsRef<Path>, sample_rate: f64, max_frames: u32) -> Result<Self> {
         Self::load_with_library(path.as_ref(), None, sample_rate, max_frames)
     }
@@ -262,152 +134,27 @@ impl ClapInstance {
             libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Opening,
-                reason: format!("Failed to load library: {}", e),
+                reason: format!("Failed to load library: {e}"),
             })?
         };
 
-        // clap_entry is a static exported struct (not a function pointer).
-        // get::<*const T> yields a Symbol whose Deref gives *const T.
-        // We copy the pointer value out so the Symbol borrow can end,
-        // then convert to a reference that lives as long as _library.
-        let entry_struct: &clap_plugin_entry = unsafe {
-            let sym = library
-                .get::<*const clap_plugin_entry>(b"clap_entry\0")
-                .map_err(|e| ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: format!("No clap_entry symbol: {}", e),
-                })?;
-            &*(*sym)
-        };
-
-        let init_fn = entry_struct.init.ok_or_else(|| ClapError::LoadFailed {
-            path: bundle_path.to_path_buf(),
-            stage: LoadStage::Opening,
-            reason: "No init function".to_string(),
-        })?;
-
-        // Pass the original bundle path to init(), not the resolved binary path
-        let path_cstr =
-            std::ffi::CString::new(bundle_path.to_string_lossy().as_ref()).map_err(|e| {
-                ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: format!("Invalid path: {}", e),
-                }
-            })?;
-
-        // Use the entry registry to ensure init is called exactly once per
-        // library. deinit is intentionally skipped — many plugins don't
-        // tolerate repeated init/deinit cycles in the same process.
-        let entry_guard =
-            entry_registry_acquire(bundle_path, init_fn, &path_cstr).map_err(|reason| {
-                ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason,
-                }
-            })?;
+        let descriptor::LoadedDescriptor {
+            entry_guard,
+            factory_ptr,
+            factory,
+            info: mut plugin_info,
+        } = load_descriptor(&library, bundle_path)?;
 
         let host_state = Arc::new(HostState::new());
         let host = Box::new(ClapHost::new(host_state.clone()));
 
-        let get_factory_fn = entry_struct
-            .get_factory
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No get_factory function".to_string(),
-            })?;
-
-        let factory_ptr = unsafe {
-            get_factory_fn(clap_sys::factory::plugin_factory::CLAP_PLUGIN_FACTORY_ID.as_ptr())
-        };
-
-        if factory_ptr.is_null() {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No plugin factory".to_string(),
-            });
-        }
-
-        let factory = unsafe {
-            &*(factory_ptr as *const clap_sys::factory::plugin_factory::clap_plugin_factory)
-        };
-
-        let get_count_fn = factory
-            .get_plugin_count
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No get_plugin_count function".to_string(),
-            })?;
-
-        let plugin_count = unsafe { get_count_fn(factory_ptr as *const _) };
-        if plugin_count == 0 {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No plugins in factory".to_string(),
-            });
-        }
-
-        let get_desc_fn = factory
-            .get_plugin_descriptor
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No get_plugin_descriptor function".to_string(),
-            })?;
-
-        let desc_ptr = unsafe { get_desc_fn(factory_ptr as *const _, 0) };
-        if desc_ptr.is_null() {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Factory,
-                reason: "No plugin descriptor".to_string(),
-            });
-        }
-
-        let descriptor = unsafe { &*desc_ptr };
-
-        let plugin_id = unsafe { CStr::from_ptr(descriptor.id) }
-            .to_string_lossy()
-            .into_owned();
-        let name = unsafe { CStr::from_ptr(descriptor.name) }
-            .to_string_lossy()
-            .into_owned();
-        let vendor = unsafe { CStr::from_ptr(descriptor.vendor) }
-            .to_string_lossy()
-            .into_owned();
-        let version = unsafe { CStr::from_ptr(descriptor.version) }
-            .to_string_lossy()
-            .into_owned();
-        let url = unsafe { cstr_to_string(descriptor.url) };
-        let description = unsafe { cstr_to_string(descriptor.description) };
-
-        let features = if descriptor.features.is_null() {
-            Vec::new()
-        } else {
-            let mut features = Vec::new();
-            let mut ptr = descriptor.features;
-            const MAX_FEATURES: usize = 256;
-            unsafe {
-                while !(*ptr).is_null() && features.len() < MAX_FEATURES {
-                    features.push(CStr::from_ptr(*ptr).to_string_lossy().into_owned());
-                    ptr = ptr.add(1);
-                }
-            }
-            features
-        };
-
-        let plugin_id_cstr =
-            std::ffi::CString::new(plugin_id.as_str()).map_err(|e| ClapError::LoadFailed {
+        let plugin_id_cstr = std::ffi::CString::new(plugin_info.id.as_str()).map_err(|e| {
+            ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Instantiation,
-                reason: format!("Invalid plugin ID: {}", e),
-            })?;
+                reason: format!("Invalid plugin ID: {e}"),
+            }
+        })?;
 
         let create_fn = factory.create_plugin.ok_or_else(|| ClapError::LoadFailed {
             path: bundle_path.to_path_buf(),
@@ -415,15 +162,11 @@ impl ClapInstance {
             reason: "No create_plugin function".to_string(),
         })?;
 
-        let plugin = unsafe {
-            create_fn(
-                factory_ptr as *const _,
-                host.as_raw(),
-                plugin_id_cstr.as_ptr(),
-            )
+        let plugin_ptr = unsafe {
+            create_fn(factory_ptr as *const _, host.as_raw(), plugin_id_cstr.as_ptr())
         };
 
-        if plugin.is_null() {
+        if plugin_ptr.is_null() {
             return Err(ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Instantiation,
@@ -431,14 +174,15 @@ impl ClapInstance {
             });
         }
 
-        let plugin_ref = unsafe { &*plugin };
-        let plugin_init_fn = plugin_ref.init.ok_or_else(|| ClapError::LoadFailed {
-            path: bundle_path.to_path_buf(),
-            stage: LoadStage::Initialization,
-            reason: "No plugin init function".to_string(),
-        })?;
+        let plugin_init_fn = unsafe { &*plugin_ptr }
+            .init
+            .ok_or_else(|| ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Initialization,
+                reason: "No plugin init function".to_string(),
+            })?;
 
-        if !unsafe { plugin_init_fn(plugin) } {
+        if !unsafe { plugin_init_fn(plugin_ptr) } {
             return Err(ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Initialization,
@@ -446,38 +190,28 @@ impl ClapInstance {
             });
         }
 
-        let extensions = ExtensionCache::query(plugin);
+        let plugin = PluginHandle::new(plugin_ptr);
+        let extensions = ExtensionCache::query(plugin.as_ptr());
 
-        let input_port_channels = Self::port_channels_static(plugin, extensions.audio.ports, true);
-        let output_port_channels =
-            Self::port_channels_static(plugin, extensions.audio.ports, false);
-
-        let audio_inputs: usize = input_port_channels.iter().map(|&c| c as usize).sum();
-        let audio_outputs: usize = output_port_channels.iter().map(|&c| c as usize).sum();
-
-        let supports_f64 = Self::check_f64_support(plugin, extensions.audio.ports);
-
-        let info = PluginInfo {
-            id: plugin_id,
-            name,
-            vendor,
-            version,
-            url,
-            description,
-            features,
-            audio_inputs: if audio_inputs > 0 { audio_inputs } else { 2 },
-            audio_outputs: if audio_outputs > 0 { audio_outputs } else { 2 },
+        let mut ports = PortLayout {
+            inputs: port_channels(plugin.as_ptr(), extensions.audio.ports, true),
+            outputs: port_channels(plugin.as_ptr(), extensions.audio.ports, false),
         };
 
-        let input_port_channels = if input_port_channels.is_empty() {
-            vec![2]
-        } else {
-            input_port_channels
-        };
-        let output_port_channels = if output_port_channels.is_empty() {
-            vec![2]
-        } else {
-            output_port_channels
+        plugin_info.audio_inputs = ports.input_channel_total().max(2);
+        plugin_info.audio_outputs = ports.output_channel_total().max(2);
+
+        if ports.inputs.is_empty() {
+            ports.inputs.push(2);
+        }
+        if ports.outputs.is_empty() {
+            ports.outputs.push(2);
+        }
+
+        let audio = AudioConfig {
+            sample_rate,
+            max_frames,
+            supports_f64: check_f64_support(plugin.as_ptr(), extensions.audio.ports),
         };
 
         Ok(Self {
@@ -487,76 +221,15 @@ impl ClapInstance {
             _host: host,
             host_state,
             extensions,
-            info,
-            supports_f64,
-            sample_rate,
-            max_frames,
-            is_active: false,
-            is_processing: false,
-            input_port_channels,
-            output_port_channels,
-            gui_created: false,
+            info: plugin_info,
+            audio,
+            ports,
+            flags: LifecycleFlags::default(),
         })
     }
 
-    fn port_channels_static(
-        plugin: *const clap_plugin,
-        audio_ports: *const clap_plugin_audio_ports,
-        is_input: bool,
-    ) -> Vec<u32> {
-        if audio_ports.is_null() {
-            return Vec::new();
-        }
-        let ext = unsafe { &*audio_ports };
-        let count_fn = match ext.count {
-            Some(f) => f,
-            None => return Vec::new(),
-        };
-        let get_fn = match ext.get {
-            Some(f) => f,
-            None => return Vec::new(),
-        };
-        let count = unsafe { count_fn(plugin, is_input) };
-        let mut ports = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-            if unsafe { get_fn(plugin, i, is_input, &mut info) } {
-                ports.push(info.channel_count);
-            }
-        }
-        ports
-    }
-
-    fn check_f64_support(
-        plugin: *const clap_plugin,
-        audio_ports: *const clap_plugin_audio_ports,
-    ) -> bool {
-        if audio_ports.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*audio_ports };
-        let count_fn = match ext.count {
-            Some(f) => f,
-            None => return false,
-        };
-        let get_fn = match ext.get {
-            Some(f) => f,
-            None => return false,
-        };
-        let count = unsafe { count_fn(plugin, false) };
-        for i in 0..count {
-            let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-            if unsafe { get_fn(plugin, i, false, &mut info) }
-                && (info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0
-            {
-                return true;
-            }
-        }
-        false
-    }
-
     pub fn supports_f64(&self) -> bool {
-        self.supports_f64
+        self.audio.supports_f64
     }
 
     pub fn info(&self) -> &PluginInfo {
@@ -564,136 +237,171 @@ impl ClapInstance {
     }
 
     pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+        self.audio.sample_rate
     }
 
     pub fn block_size(&self) -> u32 {
-        self.max_frames
+        self.audio.max_frames
     }
 
     pub fn is_active(&self) -> bool {
-        self.is_active
+        self.flags.active
     }
 
     pub fn is_processing(&self) -> bool {
-        self.is_processing
+        self.flags.processing
     }
 
     pub fn activate(&mut self) -> Result<()> {
-        if self.is_active {
+        if self.flags.active {
             return Ok(());
         }
 
-        let plugin_ref = unsafe { &*self.plugin };
+        let plugin_ref = unsafe { self.plugin.as_ref() };
         let activate_fn = plugin_ref.activate.ok_or(ClapError::NotActivated)?;
 
-        if !unsafe { activate_fn(self.plugin, self.sample_rate, 1, self.max_frames) } {
+        if !unsafe {
+            activate_fn(
+                self.plugin.as_ptr(),
+                self.audio.sample_rate,
+                1,
+                self.audio.max_frames,
+            )
+        } {
             return Err(ClapError::LoadFailed {
-                path: std::path::PathBuf::new(),
+                path: PathBuf::new(),
                 stage: LoadStage::Activation,
                 reason: "Activate failed".to_string(),
             });
         }
 
-        self.is_active = true;
+        self.flags.active = true;
         Ok(())
     }
 
     pub fn deactivate(&mut self) {
-        if !self.is_active {
+        if !self.flags.active {
             return;
         }
-
-        if self.is_processing {
+        if self.flags.processing {
             self.stop_processing();
         }
-
-        let plugin_ref = unsafe { &*self.plugin };
+        let plugin_ref = unsafe { self.plugin.as_ref() };
         if let Some(deactivate_fn) = plugin_ref.deactivate {
-            unsafe { deactivate_fn(self.plugin) };
+            unsafe { deactivate_fn(self.plugin.as_ptr()) };
         }
-
-        self.is_active = false;
+        self.flags.active = false;
     }
 
     pub fn start_processing(&mut self) -> Result<()> {
-        if !self.is_active {
+        if !self.flags.active {
             self.activate()?;
         }
-
-        if self.is_processing {
+        if self.flags.processing {
             return Ok(());
         }
 
-        let plugin_ref = unsafe { &*self.plugin };
+        let plugin_ref = unsafe { self.plugin.as_ref() };
         if let Some(start_fn) = plugin_ref.start_processing {
-            if !unsafe { start_fn(self.plugin) } {
+            if !unsafe { start_fn(self.plugin.as_ptr()) } {
                 return Err(ClapError::ProcessError(
                     "Start processing failed".to_string(),
                 ));
             }
         }
 
-        self.is_processing = true;
+        self.flags.processing = true;
         Ok(())
     }
 
     pub fn stop_processing(&mut self) {
-        if !self.is_processing {
+        if !self.flags.processing {
             return;
         }
-
-        let plugin_ref = unsafe { &*self.plugin };
+        let plugin_ref = unsafe { self.plugin.as_ref() };
         if let Some(stop_fn) = plugin_ref.stop_processing {
-            unsafe { stop_fn(self.plugin) };
+            unsafe { stop_fn(self.plugin.as_ptr()) };
         }
-
         if let Ok(mut guard) = self.host_state.audio_thread_id.lock() {
             *guard = None;
         }
-
-        self.is_processing = false;
+        self.flags.processing = false;
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f64) -> &mut Self {
-        if (self.sample_rate - sample_rate).abs() < f64::EPSILON {
-            return self; // No change — skip deactivate/reactivate cycle
+        if (self.audio.sample_rate - sample_rate).abs() < f64::EPSILON {
+            return self;
         }
-        if self.is_active {
+        if self.flags.active {
             self.deactivate();
         }
-        self.sample_rate = sample_rate;
+        self.audio.sample_rate = sample_rate;
         self
     }
 }
 
+fn port_channels(
+    plugin: *const clap_plugin,
+    audio_ports: *const clap_plugin_audio_ports,
+    is_input: bool,
+) -> Vec<u32> {
+    let Some(ext) = (unsafe { ext::opt(audio_ports) }) else {
+        return Vec::new();
+    };
+    let (count_fn, get_fn) = match (ext.count, ext.get) {
+        (Some(c), Some(g)) => (c, g),
+        _ => return Vec::new(),
+    };
+    let count = unsafe { count_fn(plugin, is_input) };
+    (0..count)
+        .filter_map(|i| {
+            let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
+            unsafe { get_fn(plugin, i, is_input, &mut info) }.then_some(info.channel_count)
+        })
+        .collect()
+}
+
+fn check_f64_support(
+    plugin: *const clap_plugin,
+    audio_ports: *const clap_plugin_audio_ports,
+) -> bool {
+    let Some(ext) = (unsafe { ext::opt(audio_ports) }) else {
+        return false;
+    };
+    let (count_fn, get_fn) = match (ext.count, ext.get) {
+        (Some(c), Some(g)) => (c, g),
+        _ => return false,
+    };
+    let count = unsafe { count_fn(plugin, false) };
+    (0..count).any(|i| {
+        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
+        let ok = unsafe { get_fn(plugin, i, false, &mut info) };
+        ok && (info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0
+    })
+}
+
 impl Drop for ClapInstance {
     fn drop(&mut self) {
-        // Destroy GUI before tearing down the plugin — the CLAP spec requires
+        // Destroy GUI before tearing down the plugin — CLAP spec requires
         // gui.destroy() before deactivate()/plugin.destroy().
         self.close_editor();
 
-        let plugin_ref = unsafe { &*self.plugin };
-
-        if self.is_processing {
+        if self.flags.processing {
+            let plugin_ref = unsafe { self.plugin.as_ref() };
             if let Some(stop_fn) = plugin_ref.stop_processing {
-                unsafe { stop_fn(self.plugin) };
+                unsafe { stop_fn(self.plugin.as_ptr()) };
             }
         }
 
-        if self.is_active {
+        if self.flags.active {
+            let plugin_ref = unsafe { self.plugin.as_ref() };
             if let Some(deactivate_fn) = plugin_ref.deactivate {
-                unsafe { deactivate_fn(self.plugin) };
+                unsafe { deactivate_fn(self.plugin.as_ptr()) };
             }
         }
 
-        if let Some(destroy_fn) = plugin_ref.destroy {
-            unsafe { destroy_fn(self.plugin) };
-        }
-
-        // entry.deinit() is intentionally NOT called. The ENTRY_REGISTRY
-        // keeps entries initialized for the process lifetime. Many plugins
-        // corrupt global state when init/deinit are called repeatedly.
+        // PluginHandle::Drop calls destroy(); EntryGuard::Drop is a no-op;
+        // library unloads last.
     }
 }
 
@@ -765,7 +473,6 @@ mod tests {
             supports: Some(context_menu_builder_supports),
         };
         unsafe {
-            // Entry with null item_data should return false
             let result = context_menu_builder_add_item(
                 &builder,
                 CLAP_CONTEXT_MENU_ITEM_ENTRY,

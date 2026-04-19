@@ -6,7 +6,7 @@ use crate::error::{ClapError, Result};
 use crate::host::HostState;
 use crate::types::{
     ContextMenuItem, ContextMenuTarget, EditorSize, RemoteControlsPage, TrackInfo,
-    TransportRequest, TriggerInfo, UndoDeltaProperties, WindowHandle,
+    TransportRequest, TriggerInfo, WindowHandle,
 };
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
@@ -17,7 +17,6 @@ use clap_sys::ext::context_menu::{
     CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL, CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
 };
 use clap_sys::ext::draft::triggers::clap_trigger_info;
-use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 use clap_sys::ext::gui::{clap_window, clap_window_handle};
 use clap_sys::ext::remote_controls::clap_remote_controls_page;
 use std::ffi::c_void;
@@ -64,10 +63,10 @@ impl ClapInstance {
         let (api, window_handle) = platform_window_handle(parent.as_ptr());
 
         if let Some(create_fn) = gui.create {
-            if !unsafe { create_fn(self.plugin, api, false) } {
+            if !unsafe { create_fn(self.plugin.as_ptr(), api, false) } {
                 return Err(ClapError::GuiError("GUI create failed".to_string()));
             }
-            self.gui_created = true;
+            self.flags.gui_created = true;
         }
 
         if let Some(set_parent_fn) = gui.set_parent {
@@ -75,7 +74,7 @@ impl ClapInstance {
                 api,
                 specific: window_handle,
             };
-            if !unsafe { set_parent_fn(self.plugin, &window) } {
+            if !unsafe { set_parent_fn(self.plugin.as_ptr(), &window) } {
                 return Err(ClapError::GuiError("Set parent failed".to_string()));
             }
         }
@@ -83,7 +82,7 @@ impl ClapInstance {
         let size = if let Some(get_size_fn) = gui.get_size {
             let mut w: u32 = 0;
             let mut h: u32 = 0;
-            if unsafe { get_size_fn(self.plugin, &mut w, &mut h) } {
+            if unsafe { get_size_fn(self.plugin.as_ptr(), &mut w, &mut h) } {
                 EditorSize {
                     width: w,
                     height: h,
@@ -102,24 +101,24 @@ impl ClapInstance {
         };
 
         if let Some(show_fn) = gui.show {
-            unsafe { show_fn(self.plugin) };
+            unsafe { show_fn(self.plugin.as_ptr()) };
         }
 
         Ok(size)
     }
 
     pub fn close_editor(&mut self) {
-        if !self.gui_created {
+        if !self.flags.gui_created {
             return;
         }
         let gui = unsafe { &*self.extensions.gui.gui };
         if let Some(hide_fn) = gui.hide {
-            unsafe { hide_fn(self.plugin) };
+            unsafe { hide_fn(self.plugin.as_ptr()) };
         }
         if let Some(destroy_fn) = gui.destroy {
-            unsafe { destroy_fn(self.plugin) };
+            unsafe { destroy_fn(self.plugin.as_ptr()) };
         }
-        self.gui_created = false;
+        self.flags.gui_created = false;
     }
 
     pub fn host_state(&self) -> &Arc<HostState> {
@@ -216,7 +215,7 @@ impl ClapInstance {
         }
 
         for id in expired_ids {
-            unsafe { on_timer(self.plugin, id) };
+            unsafe { on_timer(self.plugin.as_ptr(), id) };
             fired += 1;
         }
 
@@ -270,9 +269,9 @@ impl ClapInstance {
 
     /// Call `plugin.on_main_thread()` when the plugin has requested a main-thread callback.
     pub fn on_main_thread(&mut self) -> &mut Self {
-        let plugin_ref = unsafe { &*self.plugin };
+        let plugin_ref = unsafe { &*self.plugin.as_ptr() };
         if let Some(f) = plugin_ref.on_main_thread {
-            unsafe { f(self.plugin) };
+            unsafe { f(self.plugin.as_ptr()) };
         }
         self
     }
@@ -289,7 +288,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.track_info };
         if let Some(f) = ext.changed {
-            unsafe { f(self.plugin) };
+            unsafe { f(self.plugin.as_ptr()) };
         }
     }
 
@@ -299,7 +298,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.params.remote_controls };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin) }) as usize,
+            Some(f) => (unsafe { f(self.plugin.as_ptr()) }) as usize,
             None => 0,
         }
     }
@@ -311,7 +310,7 @@ impl ClapInstance {
         let ext = unsafe { &*self.extensions.params.remote_controls };
         let get_fn = ext.get?;
         let mut page: clap_remote_controls_page = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, index as u32, &mut page) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, &mut page) } {
             return None;
         }
         Some(RemoteControlsPage {
@@ -350,7 +349,7 @@ impl ClapInstance {
             supports: Some(context_menu_builder_supports),
         };
 
-        if unsafe { populate_fn(self.plugin, &clap_target, &builder) } {
+        if unsafe { populate_fn(self.plugin.as_ptr(), &clap_target, &builder) } {
             Some(items)
         } else {
             None
@@ -376,7 +375,7 @@ impl ClapInstance {
                 id,
             },
         };
-        unsafe { perform_fn(self.plugin, &clap_target, action_id) }
+        unsafe { perform_fn(self.plugin.as_ptr(), &clap_target, action_id) }
     }
 
     pub fn trigger_count(&self) -> usize {
@@ -385,7 +384,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.triggers };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin) }) as usize,
+            Some(f) => (unsafe { f(self.plugin.as_ptr()) }) as usize,
             None => 0,
         }
     }
@@ -397,7 +396,7 @@ impl ClapInstance {
         let ext = unsafe { &*self.extensions.system.triggers };
         let get_fn = ext.get_info?;
         let mut info: clap_trigger_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin, index as u32, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, &mut info) } {
             return None;
         }
         Some(TriggerInfo {
@@ -414,7 +413,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.thread_pool };
         if let Some(f) = ext.exec {
-            unsafe { f(self.plugin, task_index) };
+            unsafe { f(self.plugin.as_ptr(), task_index) };
         }
     }
 
@@ -424,160 +423,7 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.system.tuning };
         if let Some(f) = ext.changed {
-            unsafe { f(self.plugin) };
-        }
-    }
-
-    pub fn resource_set_directory(&self, path: &str, is_shared: bool) {
-        if self.extensions.system.resource_directory.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.system.resource_directory };
-        if let Some(f) = ext.set_directory {
-            if let Ok(cstr) = std::ffi::CString::new(path) {
-                unsafe { f(self.plugin, cstr.as_ptr(), is_shared) };
-            }
-        }
-    }
-
-    pub fn resource_collect(&self, all: bool) {
-        if self.extensions.system.resource_directory.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.system.resource_directory };
-        if let Some(f) = ext.collect {
-            unsafe { f(self.plugin, all) };
-        }
-    }
-
-    pub fn resource_files_count(&self) -> u32 {
-        if self.extensions.system.resource_directory.is_null() {
-            return 0;
-        }
-        let ext = unsafe { &*self.extensions.system.resource_directory };
-        match ext.get_files_count {
-            Some(f) => unsafe { f(self.plugin) },
-            None => 0,
-        }
-    }
-
-    pub fn resource_get_file_path(&self, index: u32) -> Option<String> {
-        if self.extensions.system.resource_directory.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.system.resource_directory };
-        let get_fn = ext.get_file_path?;
-        let mut buf = [0i8; 4096];
-        let result = unsafe { get_fn(self.plugin, index, buf.as_mut_ptr(), buf.len() as u32) };
-        if result < 0 {
-            return None;
-        }
-        Some(unsafe { cstr_to_string(buf.as_ptr()) })
-    }
-
-    pub fn undo_get_delta_properties(&self) -> Option<UndoDeltaProperties> {
-        if self.extensions.undo.delta.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.undo.delta };
-        let get_fn = ext.get_delta_properties?;
-        let mut props: clap_undo_delta_properties = unsafe { std::mem::zeroed() };
-        unsafe { get_fn(self.plugin, &mut props) };
-        Some(UndoDeltaProperties {
-            has_delta: props.has_delta,
-            are_deltas_persistent: props.are_deltas_persistent,
-            format_version: props.format_version,
-        })
-    }
-
-    pub fn undo_can_use_format_version(&self, version: u32) -> bool {
-        if self.extensions.undo.delta.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.undo.delta };
-        match ext.can_use_delta_format_version {
-            Some(f) => unsafe { f(self.plugin, version) },
-            None => false,
-        }
-    }
-
-    pub fn undo_apply_delta(&mut self, format_version: u32, delta: &[u8]) -> bool {
-        if self.extensions.undo.delta.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.undo.delta };
-        match ext.undo {
-            Some(f) => unsafe {
-                f(
-                    self.plugin,
-                    format_version,
-                    delta.as_ptr() as *const _,
-                    delta.len(),
-                )
-            },
-            None => false,
-        }
-    }
-
-    pub fn redo_apply_delta(&mut self, format_version: u32, delta: &[u8]) -> bool {
-        if self.extensions.undo.delta.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.undo.delta };
-        match ext.redo {
-            Some(f) => unsafe {
-                f(
-                    self.plugin,
-                    format_version,
-                    delta.as_ptr() as *const _,
-                    delta.len(),
-                )
-            },
-            None => false,
-        }
-    }
-
-    pub fn undo_set_can_undo(&self, can_undo: bool) {
-        if self.extensions.undo.context.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.undo.context };
-        if let Some(f) = ext.set_can_undo {
-            unsafe { f(self.plugin, can_undo) };
-        }
-    }
-
-    pub fn undo_set_can_redo(&self, can_redo: bool) {
-        if self.extensions.undo.context.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.undo.context };
-        if let Some(f) = ext.set_can_redo {
-            unsafe { f(self.plugin, can_redo) };
-        }
-    }
-
-    pub fn undo_set_undo_name(&self, name: &str) {
-        if self.extensions.undo.context.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.undo.context };
-        if let Some(f) = ext.set_undo_name {
-            if let Ok(cstr) = std::ffi::CString::new(name) {
-                unsafe { f(self.plugin, cstr.as_ptr()) };
-            }
-        }
-    }
-
-    pub fn undo_set_redo_name(&self, name: &str) {
-        if self.extensions.undo.context.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.undo.context };
-        if let Some(f) = ext.set_redo_name {
-            if let Ok(cstr) = std::ffi::CString::new(name) {
-                unsafe { f(self.plugin, cstr.as_ptr()) };
-            }
+            unsafe { f(self.plugin.as_ptr()) };
         }
     }
 
@@ -600,7 +446,7 @@ impl ClapInstance {
 
         let mut fired = 0;
         for (fd, flags) in fds {
-            unsafe { on_fd(self.plugin, fd, flags) };
+            unsafe { on_fd(self.plugin.as_ptr(), fd, flags) };
             fired += 1;
         }
         fired

@@ -148,7 +148,7 @@ impl ClapInstance {
         buffer: &mut AudioBuffer<T>,
         ctx: &ProcessContext<'_>,
     ) -> Result<ProcessOutput> {
-        if T::requires_f64() && !self.supports_f64 {
+        if T::requires_f64() && !self.audio.supports_f64 {
             return Err(ClapError::ProcessError(format!(
                 "Plugin '{}' does not support 64-bit audio processing \
                  (CLAP_AUDIO_PORT_SUPPORTS_64BITS not set)",
@@ -193,13 +193,13 @@ impl ClapInstance {
         let mut scratch_in = Vec::new();
         let mut scratch_out = Vec::new();
         let mut input_bufs = T::build_port_buffers(
-            &self.input_port_channels,
+            &self.ports.inputs,
             &mut input_ptrs,
             &mut scratch_in,
             n,
         );
         let mut output_bufs = T::build_port_buffers(
-            &self.output_port_channels,
+            &self.ports.outputs,
             &mut output_ptrs,
             &mut scratch_out,
             n,
@@ -240,7 +240,7 @@ impl ClapInstance {
             .unwrap_or(ptr::null());
 
         let steady_time = transport
-            .map(|t| (t.song_pos_seconds * self.sample_rate) as i64)
+            .map(|t| (t.song_pos_seconds * self.audio.sample_rate) as i64)
             .unwrap_or(0);
 
         let process_data = clap_process {
@@ -255,9 +255,9 @@ impl ClapInstance {
             out_events: output_events.as_raw_mut(),
         };
 
-        let plugin_ref = unsafe { &*self.plugin };
+        let plugin_ref = unsafe { self.plugin.as_ref() };
         let status = if let Some(process_fn) = plugin_ref.process {
-            unsafe { process_fn(self.plugin, &process_data) }
+            unsafe { process_fn(self.plugin.as_ptr(), &process_data) }
         } else {
             CLAP_PROCESS_CONTINUE
         };
