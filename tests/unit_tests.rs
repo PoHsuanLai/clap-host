@@ -1,20 +1,211 @@
 use std::ffi::c_void;
 
 use clap_host::{
-    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, NoteExpressionType,
-    NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue, VoiceInfo,
+    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
+    NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
+    VoiceInfo,
 };
 use clap_sys::events::{
     clap_event_header, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
-    clap_event_param_mod, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_CHOKE,
-    CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_ON,
+    clap_event_param_mod, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
+    CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_ON,
     CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
     CLAP_EVENT_PARAM_VALUE,
 };
 
-// ── MIDI tests removed while Pass 3 rewrites clap-host's MIDI surface onto
-//    `tutti_midi::MidiEvent`. Coverage will be restored in Pass 6 against the
-//    new API.
+// ── MIDI conversion via tutti_midi::MidiEvent ──
+//
+// clap-host's `ClapEvent::{from,to}_midi_event` bridge between VST3/CLAP's
+// typed event structs and Tutti's UMP `MidiEvent`. These tests cover each
+// MIDI-1 message shape we expect to round-trip cleanly.
+
+/// NoteOn maps to CLAP's typed `note` event (NoteOn variant).
+#[test]
+fn test_note_on_roundtrip() {
+    // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
+    let event = MidiEvent::note_on(0, 3, 60, 0x8000).with_frame_offset(10);
+    let clap = ClapEvent::from_midi_event(&event).expect("NoteOn should convert");
+    assert!(matches!(clap, ClapEvent::NoteOn(_)));
+    let back = clap.to_midi_event().expect("round-trip should succeed");
+    assert_eq!(back.frame_offset, 10);
+    assert!(back.is_note_on());
+    assert_eq!(back.note(), Some(60));
+}
+
+/// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
+#[test]
+fn test_note_off_roundtrip() {
+    let event = MidiEvent::note_off(0, 5, 72, 0x4000).with_frame_offset(20);
+    let clap = ClapEvent::from_midi_event(&event).expect("NoteOff should convert");
+    assert!(matches!(clap, ClapEvent::NoteOff(_)));
+    let back = clap.to_midi_event().expect("round-trip should succeed");
+    assert_eq!(back.frame_offset, 20);
+    assert!(back.is_note_off());
+    assert_eq!(back.note(), Some(72));
+}
+
+/// ControlChange falls through to CLAP's generic `Midi` (3-byte wire) event.
+#[test]
+fn test_control_change_roundtrip() {
+    use tutti_midi::convert::midi1_cc_to_midi2;
+    let event = MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(100)).with_frame_offset(5);
+    let clap = ClapEvent::from_midi_event(&event).expect("CC should convert");
+    // CC goes through the generic Midi event
+    match clap {
+        ClapEvent::Midi(e) => {
+            assert_eq!(e.data[0], 0xB0 | 2, "CC status byte");
+            assert_eq!(e.data[1], 74, "controller number");
+            assert_eq!(e.data[2], 100, "CC value");
+        }
+        _ => panic!("Expected Midi event for ControlChange"),
+    }
+}
+
+/// PitchBend falls through to CLAP's generic `Midi` event. The 14-bit
+/// bend value is split across bytes 1 (LSB) and 2 (MSB).
+#[test]
+fn test_pitch_bend_roundtrip() {
+    use tutti_midi::convert::midi1_pitch_bend_to_midi2;
+    // MIDI-1 center = 8192 (0x2000).
+    let event = MidiEvent::pitch_bend(0, 0, midi1_pitch_bend_to_midi2(8192));
+    let clap = ClapEvent::from_midi_event(&event).expect("PitchBend should convert");
+    match clap {
+        ClapEvent::Midi(e) => {
+            assert_eq!(e.data[0] & 0xF0, 0xE0, "PitchBend status nibble");
+            // Recover 14-bit value: LSB | (MSB << 7)
+            let value = (e.data[1] as u16) | ((e.data[2] as u16) << 7);
+            assert_eq!(value, 8192, "PitchBend should round-trip to center");
+        }
+        _ => panic!("Expected Midi event for PitchBend"),
+    }
+}
+
+/// ProgramChange is a 2-byte MIDI-1 event, passed through as generic `Midi`.
+#[test]
+fn test_program_change_roundtrip() {
+    let event = MidiEvent::program_change(0, 9, 42, None).with_frame_offset(100);
+    let clap = ClapEvent::from_midi_event(&event).expect("ProgramChange should convert");
+    match clap {
+        ClapEvent::Midi(e) => {
+            assert_eq!(e.data[0], 0xC0 | 9, "ProgramChange status byte");
+            assert_eq!(e.data[1], 42, "program number");
+        }
+        _ => panic!("Expected Midi event for ProgramChange"),
+    }
+}
+
+/// Note events pushed through `InputEventList::add_midi` should appear in
+/// the FFI event table.
+#[test]
+fn test_input_event_list_add_midi_counts_correctly() {
+    let mut list = InputEventList::new();
+    list.add_midi(&MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0));
+    list.add_midi(&MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(100));
+
+    let raw = list.as_raw();
+    unsafe {
+        let size_fn = (*raw).size.unwrap();
+        assert_eq!(size_fn(raw), 2);
+
+        let get_fn = (*raw).get.unwrap();
+        let header0 = &*get_fn(raw, 0);
+        assert_eq!(header0.time, 0);
+
+        let header1 = &*get_fn(raw, 1);
+        assert_eq!(header1.time, 100);
+
+        // Out of bounds returns null
+        assert!(get_fn(raw, 2).is_null());
+    }
+}
+
+/// Output NoteOn events survive the FFI round-trip back through
+/// `to_midi_events()`.
+#[test]
+fn test_output_event_list_push_note_on() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 50,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_ON,
+            flags: 0,
+        },
+        note_id: 1,
+        port_index: 0,
+        channel: 0,
+        key: 64,
+        velocity: 0.9,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        let ok = push_fn(raw as *const _, &note.header as *const _);
+        assert!(ok);
+    }
+
+    assert_eq!(list.len(), 1);
+    let midi_out = list.to_midi_events();
+    assert_eq!(midi_out.len(), 1);
+    let event = &midi_out[0];
+    assert!(event.is_note_on());
+    assert_eq!(event.note(), Some(64));
+    assert_eq!(event.frame_offset, 50);
+}
+
+/// Output generic `Midi` (CC) events survive the FFI round-trip.
+#[test]
+fn test_output_event_list_push_midi_cc() {
+    use clap_sys::events::clap_event_midi;
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let midi = clap_event_midi {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_midi>() as u32,
+            time: 33,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_MIDI,
+            flags: 0,
+        },
+        port_index: 0,
+        data: [0xB2, 74, 100],
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &midi.header as *const _));
+    }
+
+    let midi_out = list.to_midi_events();
+    assert_eq!(midi_out.len(), 1);
+    let event = &midi_out[0];
+    assert_eq!(event.frame_offset, 33);
+    // Round-tripping a CC through tutti-midi produces a UMP CV1 event;
+    // decoding back to wire bytes yields the original CC payload.
+    let (bytes, len) = event.to_midi1_bytes().expect("CC should round-trip");
+    assert_eq!(len, 3);
+    assert_eq!(bytes, [0xB2, 74, 100]);
+}
+
+/// Events added to the input list should sort by frame offset after
+/// calling `sort_by_time()`.
+#[test]
+fn test_input_event_list_sort_by_time() {
+    let mut list = InputEventList::new();
+    list.add_midi(&MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(200));
+    list.add_midi(&MidiEvent::note_on(0, 0, 64, 0x5000).with_frame_offset(50));
+    list.add_midi(&MidiEvent::note_on(0, 0, 67, 0x7000).with_frame_offset(100));
+    list.sort_by_time();
+
+    let events = list.events();
+    assert_eq!(events[0].header().time, 50);
+    assert_eq!(events[1].header().time, 100);
+    assert_eq!(events[2].header().time, 200);
+}
 
 #[test]
 fn test_output_event_list_push_param_value() {
