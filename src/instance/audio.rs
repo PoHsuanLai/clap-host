@@ -3,7 +3,7 @@
 use super::ClapInstance;
 use crate::error::{ClapError, Result};
 use crate::events::{InputEventList, OutputEventList};
-use crate::types::{AudioBuffer, Midi1Event, NoteExpressionValue, ParameterChanges, TransportInfo};
+use crate::types::{AudioBuffer, MidiEvent, NoteExpressionValue, ParameterChanges, TransportInfo};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
     clap_event_header, clap_event_transport, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT,
@@ -17,7 +17,7 @@ use std::ptr;
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcessOutput {
-    pub midi_events: Vec<Midi1Event>,
+    pub midi_events: Vec<MidiEvent>,
     pub param_changes: ParameterChanges,
     pub note_expressions: Vec<NoteExpressionValue>,
 }
@@ -27,14 +27,14 @@ pub struct ProcessOutput {
 ///
 /// ```ignore
 /// plugin.process(&mut buffer, &ProcessContext {
-///     midi: &[Midi1Event::note_on(0, 0, 60, 100)],
+///     midi: &[MidiEvent::note_on(0, 0, 60, 16384)],
 ///     transport: Some(&transport),
 ///     ..Default::default()
 /// })?;
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessContext<'a> {
-    pub midi: &'a [Midi1Event],
+    pub midi: &'a [MidiEvent],
     pub params: Option<&'a ParameterChanges>,
     pub expressions: &'a [NoteExpressionValue],
     pub transport: Option<&'a TransportInfo>,
@@ -163,7 +163,7 @@ impl ClapInstance {
     fn process_impl<T: ClapSample>(
         &mut self,
         buffer: &mut AudioBuffer<T>,
-        midi_events: &[Midi1Event],
+        midi_events: &[MidiEvent],
         param_changes: &ParameterChanges,
         note_expressions: &[NoteExpressionValue],
         transport: Option<&TransportInfo>,

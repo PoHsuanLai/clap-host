@@ -4,33 +4,19 @@
 //! ## Example
 //!
 //! ```ignore
-//! use clap_host::{ClapInstance, Midi1Event, ProcessContext, TransportInfo};
+//! use clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
 //!
 //! // Load a CLAP plugin
 //! let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
 //!
-//! // Check capabilities
-//! println!("Name: {}", plugin.info().name);
-//!
-//! // Process audio with MIDI
+//! // Process audio with MIDI — events use the workspace-wide
+//! // `tutti_midi::MidiEvent` (UMP) type, re-exported here.
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
 //! plugin.process(&mut buffer, &ProcessContext {
-//!     midi: &[Midi1Event::note_on(0, 0, 60, 100)],
+//!     midi: &[MidiEvent::note_on(0, 0, 60, 16384)],
 //!     transport: Some(&transport),
 //!     ..Default::default()
 //! })?;
-//! ```
-//!
-//! ## Custom MIDI Types
-//!
-//! If you have your own MIDI event type, implement the `ClapMidiEvent` trait:
-//!
-//! ```ignore
-//! use clap_host::{ClapMidiEvent, ClapNoteEvent};
-//!
-//! impl ClapMidiEvent for MyMidiEvent {
-//!     fn to_clap_events(&self) -> Vec<ClapNoteEvent> { /* ... */ }
-//! }
 //! ```
 
 pub mod error;
@@ -58,10 +44,10 @@ pub use types::PosixFdFlags;
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortConfigRequest, AudioPortFlags, AudioPortInfo,
-    AudioPortType, ClapMidiEvent, Color, ContextMenuItem, ContextMenuTarget, EditorSize, MidiData,
-    Midi1Event, NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName,
-    NotePortInfo, ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel,
-    TrackInfo, TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,
-    UndoDeltaProperties, VoiceInfo, WindowHandle,
+    AudioPortType, Color, ContextMenuItem, ContextMenuTarget, EditorSize, MidiEvent, NoteDialect,
+    NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName, NotePortInfo,
+    ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint,
+    ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel, TrackInfo,
+    TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange, UndoDeltaProperties,
+    VoiceInfo, WindowHandle,
 };

@@ -147,91 +147,10 @@ impl TransportInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Midi1Event {
-    pub sample_offset: i32,
-    pub channel: u8,
-    pub data: MidiData,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MidiData {
-    NoteOn { key: u8, velocity: f64 },
-    NoteOff { key: u8, velocity: f64 },
-    PolyPressure { key: u8, pressure: f64 },
-    ControlChange { controller: u8, value: u8 },
-    ProgramChange { program: u8 },
-    ChannelPressure { pressure: u8 },
-    PitchBend { value: u16 },
-}
-
-impl Midi1Event {
-    pub fn note_on(sample_offset: i32, channel: u8, key: u8, velocity: u8) -> Self {
-        Self {
-            sample_offset,
-            channel,
-            data: MidiData::NoteOn {
-                key,
-                velocity: velocity as f64 / 127.0,
-            },
-        }
-    }
-
-    pub fn note_off(sample_offset: i32, channel: u8, key: u8, velocity: u8) -> Self {
-        Self {
-            sample_offset,
-            channel,
-            data: MidiData::NoteOff {
-                key,
-                velocity: velocity as f64 / 127.0,
-            },
-        }
-    }
-
-    pub fn control_change(sample_offset: i32, channel: u8, controller: u8, value: u8) -> Self {
-        Self {
-            sample_offset,
-            channel,
-            data: MidiData::ControlChange { controller, value },
-        }
-    }
-
-    pub fn program_change(sample_offset: i32, channel: u8, program: u8) -> Self {
-        Self {
-            sample_offset,
-            channel,
-            data: MidiData::ProgramChange { program },
-        }
-    }
-
-    pub fn pitch_bend(sample_offset: i32, channel: u8, value: u16) -> Self {
-        Self {
-            sample_offset,
-            channel,
-            data: MidiData::PitchBend { value },
-        }
-    }
-}
-
-pub trait ClapMidiEvent {
-    fn sample_offset(&self) -> i32;
-    fn channel(&self) -> u8;
-    fn to_midi_data(&self) -> Option<MidiData>;
-}
-
-impl ClapMidiEvent for Midi1Event {
-    fn sample_offset(&self) -> i32 {
-        self.sample_offset
-    }
-
-    fn channel(&self) -> u8 {
-        self.channel
-    }
-
-    fn to_midi_data(&self) -> Option<MidiData> {
-        Some(self.data)
-    }
-}
+// MIDI types re-exported from `tutti-midi`. Callers should construct
+// events via `tutti_midi::MidiEvent::note_on(...)` etc. rather than any
+// CLAP-specific intermediate.
+pub use tutti_midi::MidiEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteExpressionType {

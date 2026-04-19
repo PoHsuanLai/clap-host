@@ -15,6 +15,7 @@ clap-sys = "0.5"
 libloading = "0.8"
 smallvec = "1"
 thiserror = "2"
+tutti-midi = { path = "../tutti-midi" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -4,7 +4,7 @@
 //! `input_events_get` have the correct C memory layout for plugins to cast.
 
 use crate::types::{
-    MidiData, Midi1Event, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
+    MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
 use clap_sys::events::{
@@ -166,105 +166,52 @@ impl ClapEvent {
         })
     }
 
-    pub fn from_midi_event(event: &Midi1Event) -> Option<Self> {
-        let time = event.sample_offset as u32;
-        let channel = event.channel as i16;
-
-        match event.data {
-            MidiData::NoteOn { key, velocity } => {
-                Some(ClapEvent::note_on(time, channel, key as i16, velocity))
-            }
-            MidiData::NoteOff { key, velocity } => {
-                Some(ClapEvent::note_off(time, channel, key as i16, velocity))
-            }
-            MidiData::ControlChange { controller, value } => Some(ClapEvent::midi(
+    /// Build a `ClapEvent` from a Tutti UMP [`MidiEvent`]. The UMP is
+    /// downconverted to MIDI-1 via `tutti_midi::MidiEvent::to_midi1_bytes`
+    /// and encoded into the matching CLAP event shape (typed NoteOn/Off
+    /// for channel-voice notes, generic `Midi` DataEvent for everything
+    /// else). Returns `None` for UMP variants with no MIDI-1 form
+    /// (per-note controllers, SysEx, utility).
+    pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
+        let (bytes, _len) = event.to_midi1_bytes()?;
+        let time = event.frame_offset;
+        let status = bytes[0];
+        let channel = (status & 0x0F) as i16;
+        match status & 0xF0 {
+            0x80 => Some(ClapEvent::note_off(
                 time,
-                0,
-                [0xB0 | (channel as u8), controller, value],
+                channel,
+                bytes[1] as i16,
+                bytes[2] as f64 / 127.0,
             )),
-            MidiData::ProgramChange { program } => Some(ClapEvent::midi(
+            0x90 => Some(ClapEvent::note_on(
                 time,
-                0,
-                [0xC0 | (channel as u8), program, 0],
+                channel,
+                bytes[1] as i16,
+                bytes[2] as f64 / 127.0,
             )),
-            MidiData::ChannelPressure { pressure } => Some(ClapEvent::midi(
-                time,
-                0,
-                [0xD0 | (channel as u8), pressure, 0],
-            )),
-            MidiData::PitchBend { value } => Some(ClapEvent::midi(
-                time,
-                0,
-                [
-                    0xE0 | (channel as u8),
-                    (value & 0x7F) as u8,
-                    ((value >> 7) & 0x7F) as u8,
-                ],
-            )),
-            MidiData::PolyPressure { key, pressure } => {
-                let pressure_byte = (pressure * 127.0) as u8;
-                Some(ClapEvent::midi(
-                    time,
-                    0,
-                    [0xA0 | (channel as u8), key, pressure_byte],
-                ))
-            }
+            _ => Some(ClapEvent::midi(time, 0, [status, bytes[1], bytes[2]])),
         }
     }
 
-    pub fn to_midi_event(&self) -> Option<Midi1Event> {
+    /// Convert a `ClapEvent` back to a Tutti UMP [`MidiEvent`]. Reads
+    /// typed NoteOn/Off events back to 3-byte wire form, passes `Midi`
+    /// events through directly, then lets `MidiEvent::from_midi1_bytes`
+    /// upconvert velocity/CC/pitch-bend resolution. Returns `None` for
+    /// non-MIDI event types (NoteExpression, ParamValue, etc.).
+    pub fn to_midi_event(&self) -> Option<MidiEvent> {
         match self {
-            ClapEvent::NoteOn(e) => Some(Midi1Event {
-                sample_offset: e.header.time as i32,
-                channel: e.channel as u8,
-                data: MidiData::NoteOn {
-                    key: e.key as u8,
-                    velocity: e.velocity,
-                },
-            }),
-            ClapEvent::NoteOff(e) => Some(Midi1Event {
-                sample_offset: e.header.time as i32,
-                channel: e.channel as u8,
-                data: MidiData::NoteOff {
-                    key: e.key as u8,
-                    velocity: e.velocity,
-                },
-            }),
-            ClapEvent::Midi(e) => {
-                let status = e.data[0];
-                let channel = status & 0x0F;
-                let data = match status & 0xF0 {
-                    0x80 => MidiData::NoteOff {
-                        key: e.data[1],
-                        velocity: e.data[2] as f64 / 127.0,
-                    },
-                    0x90 => MidiData::NoteOn {
-                        key: e.data[1],
-                        velocity: e.data[2] as f64 / 127.0,
-                    },
-                    0xA0 => MidiData::PolyPressure {
-                        key: e.data[1],
-                        pressure: e.data[2] as f64 / 127.0,
-                    },
-                    0xB0 => MidiData::ControlChange {
-                        controller: e.data[1],
-                        value: e.data[2],
-                    },
-                    0xC0 => MidiData::ProgramChange { program: e.data[1] },
-                    0xD0 => MidiData::ChannelPressure {
-                        pressure: e.data[1],
-                    },
-                    0xE0 => MidiData::PitchBend {
-                        value: (e.data[1] as u16) | ((e.data[2] as u16) << 7),
-                    },
-                    _ => return None,
-                };
-                Some(Midi1Event {
-                    sample_offset: e.header.time as i32,
-                    channel,
-                    data,
-                })
+            ClapEvent::NoteOn(e) => {
+                let velocity_u7 = (e.velocity * 127.0).clamp(0.0, 127.0) as u8;
+                let bytes = [0x90 | (e.channel as u8 & 0x0F), e.key as u8 & 0x7F, velocity_u7];
+                MidiEvent::from_midi1_bytes(e.header.time, &bytes)
             }
+            ClapEvent::NoteOff(e) => {
+                let velocity_u7 = (e.velocity * 127.0).clamp(0.0, 127.0) as u8;
+                let bytes = [0x80 | (e.channel as u8 & 0x0F), e.key as u8 & 0x7F, velocity_u7];
+                MidiEvent::from_midi1_bytes(e.header.time, &bytes)
+            }
+            ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data),
             _ => None,
         }
     }
@@ -309,14 +256,14 @@ impl InputEventList {
         }
     }
 
-    pub fn add_midi(&mut self, event: &Midi1Event) -> &mut Self {
+    pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
         if let Some(clap_event) = ClapEvent::from_midi_event(event) {
             self.events.push(clap_event);
         }
         self
     }
 
-    pub fn add_midi_events(&mut self, events: &[Midi1Event]) -> &mut Self {
+    pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
         for event in events {
             if let Some(clap_event) = ClapEvent::from_midi_event(event) {
                 self.events.push(clap_event);
@@ -425,7 +372,7 @@ impl OutputEventList {
         std::mem::take(&mut self.events)
     }
 
-    pub fn to_midi_events(&self) -> Vec<Midi1Event> {
+    pub fn to_midi_events(&self) -> Vec<MidiEvent> {
         self.events
             .iter()
             .filter_map(|e| e.to_midi_event())

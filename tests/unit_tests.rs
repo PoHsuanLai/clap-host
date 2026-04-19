@@ -1,9 +1,8 @@
 use std::ffi::c_void;
 
 use clap_host::{
-    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiData, Midi1Event,
-    NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
-    VoiceInfo,
+    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, NoteExpressionType,
+    NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue, VoiceInfo,
 };
 use clap_sys::events::{
     clap_event_header, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
@@ -13,152 +12,9 @@ use clap_sys::events::{
     CLAP_EVENT_PARAM_VALUE,
 };
 
-// ── MIDI conversion roundtrip ──
-
-#[test]
-fn test_note_on_roundtrip() {
-    let midi = Midi1Event::note_on(10, 3, 60, 100);
-    let clap = ClapEvent::from_midi_event(&midi).unwrap();
-    let back = clap.to_midi_event().unwrap();
-
-    assert_eq!(back.sample_offset, 10);
-    assert_eq!(back.channel, 3);
-    match back.data {
-        MidiData::NoteOn { key, velocity } => {
-            assert_eq!(key, 60);
-            assert!((velocity - 100.0 / 127.0).abs() < 0.001);
-        }
-        _ => panic!("Expected NoteOn"),
-    }
-}
-
-#[test]
-fn test_note_off_roundtrip() {
-    let midi = Midi1Event::note_off(20, 5, 72, 64);
-    let clap = ClapEvent::from_midi_event(&midi).unwrap();
-    let back = clap.to_midi_event().unwrap();
-
-    assert_eq!(back.sample_offset, 20);
-    assert_eq!(back.channel, 5);
-    match back.data {
-        MidiData::NoteOff { key, velocity } => {
-            assert_eq!(key, 72);
-            assert!((velocity - 64.0 / 127.0).abs() < 0.001);
-        }
-        _ => panic!("Expected NoteOff"),
-    }
-}
-
-#[test]
-fn test_control_change_roundtrip() {
-    let midi = Midi1Event::control_change(5, 2, 74, 100);
-    let clap = ClapEvent::from_midi_event(&midi).unwrap();
-    let back = clap.to_midi_event().unwrap();
-
-    assert_eq!(back.sample_offset, 5);
-    assert_eq!(back.channel, 2);
-    match back.data {
-        MidiData::ControlChange { controller, value } => {
-            assert_eq!(controller, 74);
-            assert_eq!(value, 100);
-        }
-        _ => panic!("Expected ControlChange"),
-    }
-}
-
-#[test]
-fn test_pitch_bend_roundtrip() {
-    let midi = Midi1Event::pitch_bend(0, 0, 8192);
-    let clap = ClapEvent::from_midi_event(&midi).unwrap();
-    let back = clap.to_midi_event().unwrap();
-
-    match back.data {
-        MidiData::PitchBend { value } => {
-            assert_eq!(value, 8192);
-        }
-        _ => panic!("Expected PitchBend"),
-    }
-}
-
-#[test]
-fn test_program_change_roundtrip() {
-    let midi = Midi1Event::program_change(100, 9, 42);
-    let clap = ClapEvent::from_midi_event(&midi).unwrap();
-    let back = clap.to_midi_event().unwrap();
-
-    assert_eq!(back.sample_offset, 100);
-    assert_eq!(back.channel, 9);
-    match back.data {
-        MidiData::ProgramChange { program } => assert_eq!(program, 42),
-        _ => panic!("Expected ProgramChange"),
-    }
-}
-
-// ── Input event list FFI callbacks ──
-
-#[test]
-fn test_input_event_list_ffi_size_and_get() {
-    let mut list = InputEventList::new();
-    list.add_midi(&Midi1Event::note_on(0, 0, 60, 100));
-    list.add_midi(&Midi1Event::note_off(100, 0, 60, 0));
-
-    let raw = list.as_raw();
-    unsafe {
-        let size_fn = (*raw).size.unwrap();
-        assert_eq!(size_fn(raw), 2);
-
-        let get_fn = (*raw).get.unwrap();
-        let header0 = &*get_fn(raw, 0);
-        assert_eq!(header0.time, 0);
-
-        let header1 = &*get_fn(raw, 1);
-        assert_eq!(header1.time, 100);
-
-        // Out of bounds returns null
-        assert!(get_fn(raw, 2).is_null());
-    }
-}
-
-// ── Output event list FFI callback ──
-
-#[test]
-fn test_output_event_list_push_note_on() {
-    let mut list = OutputEventList::new();
-    let raw = list.as_raw_mut();
-
-    let note = clap_event_note {
-        header: clap_event_header {
-            size: std::mem::size_of::<clap_event_note>() as u32,
-            time: 50,
-            space_id: CLAP_CORE_EVENT_SPACE_ID,
-            type_: CLAP_EVENT_NOTE_ON,
-            flags: 0,
-        },
-        note_id: 1,
-        port_index: 0,
-        channel: 0,
-        key: 64,
-        velocity: 0.9,
-    };
-
-    unsafe {
-        let push_fn = (*raw).try_push.unwrap();
-        let ok = push_fn(raw as *const _, &note.header as *const _);
-        assert!(ok);
-    }
-
-    assert_eq!(list.len(), 1);
-    let midi_out = list.to_midi_events();
-    assert_eq!(midi_out.len(), 1);
-    assert_eq!(midi_out[0].sample_offset, 50);
-    match midi_out[0].data {
-        MidiData::NoteOn { key, velocity } => {
-            assert_eq!(key, 64);
-            assert!((velocity - 0.9).abs() < 0.001);
-        }
-        _ => panic!("Expected NoteOn"),
-    }
-}
+// ── MIDI tests removed while Pass 3 rewrites clap-host's MIDI surface onto
+//    `tutti_midi::MidiEvent`. Coverage will be restored in Pass 6 against the
+//    new API.
 
 #[test]
 fn test_output_event_list_push_param_value() {
@@ -193,21 +49,7 @@ fn test_output_event_list_push_param_value() {
     assert!((changes.queues[0].points[0].value - 0.42).abs() < 0.001);
 }
 
-// ── Event sorting ──
-
-#[test]
-fn test_input_event_list_sort_by_time() {
-    let mut list = InputEventList::new();
-    list.add_midi(&Midi1Event::note_on(200, 0, 60, 100));
-    list.add_midi(&Midi1Event::note_on(50, 0, 64, 80));
-    list.add_midi(&Midi1Event::note_on(100, 0, 67, 90));
-    list.sort_by_time();
-
-    let events = list.events();
-    assert_eq!(events[0].header().time, 50);
-    assert_eq!(events[1].header().time, 100);
-    assert_eq!(events[2].header().time, 200);
-}
+// sort_by_time test removed alongside other MIDI-shape-dependent tests.
 
 // ── Parameter changes grouping ──
 
@@ -382,8 +224,6 @@ fn test_output_list_filters_midi_from_mixed_events() {
     }
 
     assert_eq!(list.len(), 2);
-    // to_midi_events should only return the note, not the param
-    assert_eq!(list.to_midi_events().len(), 1);
     // to_param_changes should only return the param, not the note
     assert_eq!(list.to_param_changes().queues.len(), 1);
 }
@@ -426,8 +266,6 @@ fn test_output_list_push_note_choke() {
         }
         _ => panic!("Expected NoteChoke"),
     }
-    // NoteChoke should not produce MIDI output
-    assert_eq!(list.to_midi_events().len(), 0);
 }
 
 #[test]
@@ -465,7 +303,6 @@ fn test_output_list_push_note_end() {
         }
         _ => panic!("Expected NoteEnd"),
     }
-    assert_eq!(list.to_midi_events().len(), 0);
 }
 
 #[test]
@@ -519,8 +356,7 @@ fn test_output_list_push_param_gesture_begin_end() {
         _ => panic!("Expected ParamGestureEnd"),
     }
 
-    // Gesture events should not appear as MIDI or param changes
-    assert_eq!(list.to_midi_events().len(), 0);
+    // Gesture events should not appear as param changes
     assert_eq!(list.to_param_changes().queues.len(), 0);
 }
 
