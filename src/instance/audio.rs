@@ -161,7 +161,9 @@ fn refill_port_buffers<T: ClapSample>(
     let mut offset = 0usize;
     for &ch_count in output_ports {
         let base = unsafe { output_ptrs_base.add(offset) };
-        scratch.output_bufs.push(T::make_port_buffer(base, ch_count));
+        scratch
+            .output_bufs
+            .push(T::make_port_buffer(base, ch_count));
         offset += ch_count as usize;
     }
 }

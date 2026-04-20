@@ -368,7 +368,15 @@ impl ClapInstance {
         }
         let ext = unsafe { &*self.extensions.audio.ports_activation };
         match ext.set_active {
-            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input, port_index, is_active, sample_size) },
+            Some(f) => unsafe {
+                f(
+                    self.plugin.as_ptr(),
+                    is_input,
+                    port_index,
+                    is_active,
+                    sample_size,
+                )
+            },
             None => false,
         }
     }
@@ -394,7 +402,15 @@ impl ClapInstance {
             .as_ref()
             .map(|c| c.as_ptr())
             .unwrap_or(ptr::null());
-        unsafe { add_fn(self.plugin.as_ptr(), is_input, channel_count, type_ptr, ptr::null()) }
+        unsafe {
+            add_fn(
+                self.plugin.as_ptr(),
+                is_input,
+                channel_count,
+                type_ptr,
+                ptr::null(),
+            )
+        }
     }
 
     /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
@@ -491,8 +507,15 @@ impl ClapInstance {
         let ext = unsafe { &*self.extensions.audio.surround };
         let get_fn = ext.get_channel_map?;
         let mut map = [0u8; 64];
-        let count =
-            unsafe { get_fn(self.plugin.as_ptr(), is_input, port_index, map.as_mut_ptr(), 64) } as usize;
+        let count = unsafe {
+            get_fn(
+                self.plugin.as_ptr(),
+                is_input,
+                port_index,
+                map.as_mut_ptr(),
+                64,
+            )
+        } as usize;
         if count == 0 || count > map.len() {
             return None;
         }

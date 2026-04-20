@@ -151,13 +151,12 @@ impl ClapInstance {
         let host_state = Arc::new(HostState::new());
         let host = Box::new(ClapHost::new(host_state.clone()));
 
-        let plugin_id_cstr = std::ffi::CString::new(plugin_info.id.as_str()).map_err(|e| {
-            ClapError::LoadFailed {
+        let plugin_id_cstr =
+            std::ffi::CString::new(plugin_info.id.as_str()).map_err(|e| ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Instantiation,
                 reason: format!("Invalid plugin ID: {e}"),
-            }
-        })?;
+            })?;
 
         let create_fn = factory.create_plugin.ok_or_else(|| ClapError::LoadFailed {
             path: bundle_path.to_path_buf(),
@@ -166,7 +165,11 @@ impl ClapInstance {
         })?;
 
         let plugin_ptr = unsafe {
-            create_fn(factory_ptr as *const _, host.as_raw(), plugin_id_cstr.as_ptr())
+            create_fn(
+                factory_ptr as *const _,
+                host.as_raw(),
+                plugin_id_cstr.as_ptr(),
+            )
         };
 
         if plugin_ptr.is_null() {

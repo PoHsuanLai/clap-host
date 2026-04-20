@@ -46,8 +46,14 @@ impl ClapInstance {
         let ext = unsafe { ext::opt(self.extensions.system.resource_directory) }?;
         let get_fn = ext.get_file_path?;
         let mut buf = [0i8; 4096];
-        let result =
-            unsafe { get_fn(self.plugin.as_ptr(), index, buf.as_mut_ptr(), buf.len() as u32) };
+        let result = unsafe {
+            get_fn(
+                self.plugin.as_ptr(),
+                index,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+            )
+        };
         if result < 0 {
             return None;
         }

@@ -53,7 +53,13 @@ fn entry_struct<'lib>(
     unsafe {
         let sym = library
             .get::<*const clap_plugin_entry>(b"clap_entry\0")
-            .map_err(|e| fail(bundle_path, LoadStage::Opening, format!("No clap_entry symbol: {e}")))?;
+            .map_err(|e| {
+                fail(
+                    bundle_path,
+                    LoadStage::Opening,
+                    format!("No clap_entry symbol: {e}"),
+                )
+            })?;
         Ok(&*(*sym))
     }
 }
@@ -63,8 +69,13 @@ fn init_entry(entry: &clap_plugin_entry, bundle_path: &Path) -> Result<EntryGuar
         .init
         .ok_or_else(|| fail(bundle_path, LoadStage::Opening, "No init function"))?;
 
-    let path_cstr = CString::new(bundle_path.to_string_lossy().as_ref())
-        .map_err(|e| fail(bundle_path, LoadStage::Opening, format!("Invalid path: {e}")))?;
+    let path_cstr = CString::new(bundle_path.to_string_lossy().as_ref()).map_err(|e| {
+        fail(
+            bundle_path,
+            LoadStage::Opening,
+            format!("Invalid path: {e}"),
+        )
+    })?;
 
     entry_registry_acquire(bundle_path, init_fn, &path_cstr)
         .map_err(|reason| fail(bundle_path, LoadStage::Opening, reason))
@@ -78,8 +89,8 @@ fn plugin_factory<'lib>(
         .get_factory
         .ok_or_else(|| fail(bundle_path, LoadStage::Factory, "No get_factory function"))?;
 
-    let factory_ptr = unsafe { get_factory(CLAP_PLUGIN_FACTORY_ID.as_ptr()) }
-        as *const clap_plugin_factory;
+    let factory_ptr =
+        unsafe { get_factory(CLAP_PLUGIN_FACTORY_ID.as_ptr()) } as *const clap_plugin_factory;
     if factory_ptr.is_null() {
         return Err(fail(bundle_path, LoadStage::Factory, "No plugin factory"));
     }
@@ -92,20 +103,36 @@ fn first_descriptor<'lib>(
     factory_ptr: *const clap_plugin_factory,
     bundle_path: &Path,
 ) -> Result<&'lib clap_plugin_descriptor> {
-    let count_fn = factory
-        .get_plugin_count
-        .ok_or_else(|| fail(bundle_path, LoadStage::Factory, "No get_plugin_count function"))?;
+    let count_fn = factory.get_plugin_count.ok_or_else(|| {
+        fail(
+            bundle_path,
+            LoadStage::Factory,
+            "No get_plugin_count function",
+        )
+    })?;
     if unsafe { count_fn(factory_ptr) } == 0 {
-        return Err(fail(bundle_path, LoadStage::Factory, "No plugins in factory"));
+        return Err(fail(
+            bundle_path,
+            LoadStage::Factory,
+            "No plugins in factory",
+        ));
     }
 
-    let get_desc = factory
-        .get_plugin_descriptor
-        .ok_or_else(|| fail(bundle_path, LoadStage::Factory, "No get_plugin_descriptor function"))?;
+    let get_desc = factory.get_plugin_descriptor.ok_or_else(|| {
+        fail(
+            bundle_path,
+            LoadStage::Factory,
+            "No get_plugin_descriptor function",
+        )
+    })?;
 
     let desc_ptr = unsafe { get_desc(factory_ptr, 0) };
     if desc_ptr.is_null() {
-        return Err(fail(bundle_path, LoadStage::Factory, "No plugin descriptor"));
+        return Err(fail(
+            bundle_path,
+            LoadStage::Factory,
+            "No plugin descriptor",
+        ));
     }
 
     Ok(unsafe { &*desc_ptr })
@@ -139,4 +166,3 @@ fn descriptor_to_info(descriptor: &clap_plugin_descriptor) -> PluginInfo {
         .features(features)
     }
 }
-

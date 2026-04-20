@@ -215,12 +215,20 @@ impl ClapEvent {
         match self {
             ClapEvent::NoteOn(e) => {
                 let velocity_u7 = (e.velocity * 127.0).clamp(0.0, 127.0) as u8;
-                let bytes = [0x90 | (e.channel as u8 & 0x0F), e.key as u8 & 0x7F, velocity_u7];
+                let bytes = [
+                    0x90 | (e.channel as u8 & 0x0F),
+                    e.key as u8 & 0x7F,
+                    velocity_u7,
+                ];
                 MidiEvent::from_midi1_bytes(e.header.time, &bytes)
             }
             ClapEvent::NoteOff(e) => {
                 let velocity_u7 = (e.velocity * 127.0).clamp(0.0, 127.0) as u8;
-                let bytes = [0x80 | (e.channel as u8 & 0x0F), e.key as u8 & 0x7F, velocity_u7];
+                let bytes = [
+                    0x80 | (e.channel as u8 & 0x0F),
+                    e.key as u8 & 0x7F,
+                    velocity_u7,
+                ];
                 MidiEvent::from_midi1_bytes(e.header.time, &bytes)
             }
             ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data),
