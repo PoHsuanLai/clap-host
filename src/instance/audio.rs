@@ -363,3 +363,102 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
         tsig_denom: transport.time_sig_denominator as u16,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_scratch<T: Copy + Default>(
+        input_ports: &[u32],
+        output_ports: &[u32],
+        max_frames: usize,
+    ) -> ProcessScratch<T> {
+        let input_total: usize = input_ports.iter().map(|&c| c as usize).sum();
+        let output_total: usize = output_ports.iter().map(|&c| c as usize).sum();
+        let mut scratch = ProcessScratch::<T>::new();
+        scratch.resize_for(
+            input_total,
+            output_total,
+            max_frames,
+            input_ports.len(),
+            output_ports.len(),
+        );
+        scratch
+    }
+
+    /// RT regression: once the scratch has been sized in activate(),
+    /// `refill_port_buffers` must only reuse capacity — no heap grow.
+    #[test]
+    fn refill_port_buffers_is_allocation_free() {
+        let input_ports = [2u32, 2]; // main + sidechain stereo
+        let output_ports = [2u32];
+        let max_frames = 512usize;
+        let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
+
+        // Pretend the caller provides 2 input channels and 2 outputs.
+        let mut in_ch_a = [0.0f32; 512];
+        let mut in_ch_b = [0.0f32; 512];
+        let mut out_ch_a = [0.0f32; 512];
+        let mut out_ch_b = [0.0f32; 512];
+        let caller_inputs = [in_ch_a.as_mut_ptr(), in_ch_b.as_mut_ptr()];
+        let caller_outputs = [out_ch_a.as_mut_ptr(), out_ch_b.as_mut_ptr()];
+
+        // Warm up — first call primes the ptr/buf vectors.
+        refill_port_buffers(
+            &mut scratch,
+            &caller_inputs,
+            &caller_outputs,
+            &input_ports,
+            &output_ports,
+        );
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..10_000 {
+                refill_port_buffers(
+                    &mut scratch,
+                    &caller_inputs,
+                    &caller_outputs,
+                    &input_ports,
+                    &output_ports,
+                );
+            }
+        });
+    }
+
+    /// Caller supplies fewer channels than the plugin expects (e.g.
+    /// a mono caller on a stereo input): the padded channels are
+    /// taken from the pre-allocated scratch pool, so no alloc either.
+    #[test]
+    fn refill_with_pad_is_allocation_free() {
+        let input_ports = [4u32]; // quad input
+        let output_ports = [2u32];
+        let max_frames = 256usize;
+        let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
+
+        // Caller only provides 1 input channel and 1 output channel.
+        let mut in_ch = [0.0f32; 256];
+        let mut out_ch = [0.0f32; 256];
+        let caller_inputs = [in_ch.as_mut_ptr()];
+        let caller_outputs = [out_ch.as_mut_ptr()];
+
+        refill_port_buffers(
+            &mut scratch,
+            &caller_inputs,
+            &caller_outputs,
+            &input_ports,
+            &output_ports,
+        );
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..1_000 {
+                refill_port_buffers(
+                    &mut scratch,
+                    &caller_inputs,
+                    &caller_outputs,
+                    &input_ports,
+                    &output_ports,
+                );
+            }
+        });
+    }
+}

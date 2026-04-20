@@ -19,4 +19,5 @@ thiserror = "2"
 tutti-midi = { path = "../tutti-midi" }
 
 [dev-dependencies]
+assert_no_alloc = "1"
 tempfile = "3"

@@ -54,3 +54,8 @@ pub use types::{
     TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange, UndoDeltaProperties,
     VoiceInfo, WindowHandle,
 };
+
+// Test-only global allocator for RT-safety regression tests.
+#[cfg(test)]
+#[global_allocator]
+static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
