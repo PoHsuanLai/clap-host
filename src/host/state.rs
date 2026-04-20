@@ -1,4 +1,5 @@
 use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
+use arc_swap::ArcSwapOption;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -210,7 +211,11 @@ impl ResourceState {
 /// Shared state for host↔plugin communication via atomic flags.
 pub struct HostState {
     pub main_thread_id: ThreadId,
-    pub audio_thread_id: Mutex<Option<ThreadId>>,
+    /// Current audio-thread identity. Read from the audio thread on every
+    /// CLAP callback that queries `is_audio_thread`, and written at
+    /// start/stop of processing. Lock-free ([`ArcSwapOption`]: a single
+    /// atomic pointer load on the read side).
+    pub audio_thread_id: ArcSwapOption<ThreadId>,
     pub lifecycle: LifecycleFlags,
     pub processing: ProcessingState,
     pub gui: GuiState,
@@ -228,7 +233,7 @@ impl HostState {
     pub fn new() -> Self {
         Self {
             main_thread_id: std::thread::current().id(),
-            audio_thread_id: Mutex::new(None),
+            audio_thread_id: ArcSwapOption::from(None),
             lifecycle: LifecycleFlags::new(),
             processing: ProcessingState::new(),
             gui: GuiState::new(),

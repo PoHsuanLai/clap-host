@@ -1,9 +1,17 @@
 //! Common types for CLAP plugin hosting.
+//!
+//! These are safe, idiomatic Rust counterparts to the C structs exposed by
+//! `clap-sys`. They are used throughout the crate's public API so callers
+//! never have to touch raw CLAP types directly.
 
 use bitflags::bitflags;
 use smallvec::SmallVec;
 use std::fmt;
 
+/// Planar audio buffer borrowed from the caller for a single `process()` call.
+///
+/// `inputs` and `outputs` are slices of per-channel slices — one inner slice
+/// per channel. All slices must contain `num_samples` samples.
 pub struct AudioBuffer<'a, T = f32> {
     pub inputs: &'a [&'a [T]],
     pub outputs: &'a mut [&'a mut [T]],
@@ -11,9 +19,15 @@ pub struct AudioBuffer<'a, T = f32> {
     pub sample_rate: f64,
 }
 
+/// 32-bit floating point [`AudioBuffer`] — the default for most plugins.
 pub type AudioBuffer32<'a> = AudioBuffer<'a, f32>;
+/// 64-bit floating point [`AudioBuffer`]. Requires the plugin to advertise
+/// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`.
 pub type AudioBuffer64<'a> = AudioBuffer<'a, f64>;
 
+/// Metadata describing a loaded plugin, returned from
+/// [`ClapInstance::probe`](crate::ClapInstance::probe) and
+/// [`ClapInstance::info`](crate::ClapInstance::info).
 #[derive(Debug, Clone)]
 pub struct PluginInfo {
     pub id: String,
@@ -28,6 +42,8 @@ pub struct PluginInfo {
 }
 
 impl PluginInfo {
+    /// Create a new [`PluginInfo`] with the given plugin ID and display name.
+    /// Defaults to stereo in/out and empty metadata fields.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -42,31 +58,37 @@ impl PluginInfo {
         }
     }
 
+    /// Set the plugin vendor (builder style).
     pub fn vendor(mut self, vendor: impl Into<String>) -> Self {
         self.vendor = vendor.into();
         self
     }
 
+    /// Set the plugin version string (builder style).
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
     }
 
+    /// Set the plugin homepage URL (builder style).
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = url.into();
         self
     }
 
+    /// Set the plugin description (builder style).
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
 
+    /// Set the CLAP feature/category tags (builder style).
     pub fn features(mut self, features: Vec<String>) -> Self {
         self.features = features;
         self
     }
 
+    /// Set the audio input/output channel counts (builder style).
     pub fn audio_io(mut self, inputs: usize, outputs: usize) -> Self {
         self.audio_inputs = inputs;
         self.audio_outputs = outputs;
@@ -80,6 +102,10 @@ impl fmt::Display for PluginInfo {
     }
 }
 
+/// Transport information passed to the plugin each process block.
+///
+/// Use the `with_*` builders to fill only the fields that apply; unset
+/// fields default to zero and a non-playing transport.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TransportInfo {
     pub playing: bool,
@@ -97,6 +123,8 @@ pub struct TransportInfo {
 }
 
 impl TransportInfo {
+    /// Create a [`TransportInfo`] preloaded with sensible musical defaults
+    /// (120 BPM, 4/4 time), all position fields zeroed.
     pub fn new() -> Self {
         Self {
             tempo: 120.0,
@@ -106,21 +134,25 @@ impl TransportInfo {
         }
     }
 
+    /// Set tempo in beats per minute.
     pub fn with_tempo(mut self, tempo: f64) -> Self {
         self.tempo = tempo;
         self
     }
 
+    /// Mark the transport as playing.
     pub fn with_playing(mut self, playing: bool) -> Self {
         self.playing = playing;
         self
     }
 
+    /// Mark the transport as recording.
     pub fn with_recording(mut self, recording: bool) -> Self {
         self.recording = recording;
         self
     }
 
+    /// Configure the loop region in beats and whether it is active.
     pub fn with_loop(mut self, active: bool, start: f64, end: f64) -> Self {
         self.cycle_active = active;
         self.loop_start_beats = start;
@@ -128,18 +160,21 @@ impl TransportInfo {
         self
     }
 
+    /// Set the time signature (e.g. `4, 4` for common time).
     pub fn with_time_signature(mut self, numerator: i32, denominator: i32) -> Self {
         self.time_sig_numerator = numerator;
         self.time_sig_denominator = denominator;
         self
     }
 
+    /// Set the current song position in both beats and seconds.
     pub fn with_position(mut self, beats: f64, seconds: f64) -> Self {
         self.song_pos_beats = beats;
         self.song_pos_seconds = seconds;
         self
     }
 
+    /// Set the position of the current bar (in beats) and its 1-based number.
     pub fn with_bar(mut self, bar_start: f64, bar_number: i32) -> Self {
         self.bar_start = bar_start;
         self.bar_number = bar_number;
@@ -147,11 +182,13 @@ impl TransportInfo {
     }
 }
 
-// MIDI types re-exported from `tutti-midi`. Callers should construct
-// events via `tutti_midi::MidiEvent::note_on(...)` etc. rather than any
-// CLAP-specific intermediate.
+/// MIDI events are re-exported from [`tutti_midi`]. Construct notes via
+/// `tutti_midi::MidiEvent::note_on(...)` etc. rather than a CLAP-specific
+/// intermediate — this keeps MIDI representation consistent across the engine.
 pub use tutti_midi::MidiEvent;
 
+/// Per-note expression dimension (CLAP's richer alternative to MIDI polyphonic
+/// aftertouch / per-note CC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteExpressionType {
     Volume,
@@ -163,6 +200,7 @@ pub enum NoteExpressionType {
     Expression,
 }
 
+/// A single note expression applied at a sample offset within a block.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionValue {
     pub sample_offset: i32,
@@ -175,6 +213,8 @@ pub struct NoteExpressionValue {
 }
 
 impl NoteExpressionValue {
+    /// Create a new note expression. Defaults to port 0, any channel, any key;
+    /// refine with the `port`/`on_channel`/`on_key`/`at` builders.
     pub fn new(expression_type: NoteExpressionType, note_id: i32, value: f64) -> Self {
         Self {
             sample_offset: 0,
@@ -187,33 +227,40 @@ impl NoteExpressionValue {
         }
     }
 
+    /// Sample offset (within the current block) at which the expression fires.
     pub fn at(mut self, sample_offset: i32) -> Self {
         self.sample_offset = sample_offset;
         self
     }
 
+    /// Set the note port index.
     pub fn port(mut self, port_index: i16) -> Self {
         self.port_index = port_index;
         self
     }
 
+    /// Scope to a specific MIDI channel.
     pub fn on_channel(mut self, channel: i16) -> Self {
         self.channel = channel;
         self
     }
 
+    /// Scope to a specific MIDI key.
     pub fn on_key(mut self, key: i16) -> Self {
         self.key = key;
         self
     }
 }
 
+/// One point in an automation/parameter-change queue: the value at a given
+/// sample offset within a process block.
 #[derive(Debug, Clone, Copy)]
 pub struct ParameterPoint {
     pub sample_offset: i32,
     pub value: f64,
 }
 
+/// A sorted sequence of value changes for a single parameter.
 #[derive(Debug, Clone)]
 pub struct ParameterQueue {
     pub param_id: u32,
@@ -221,6 +268,7 @@ pub struct ParameterQueue {
 }
 
 impl ParameterQueue {
+    /// Create an empty queue for the given parameter ID.
     pub fn new(param_id: u32) -> Self {
         Self {
             param_id,
@@ -228,6 +276,7 @@ impl ParameterQueue {
         }
     }
 
+    /// Append a `(sample_offset, value)` point to the queue.
     pub fn add_point(&mut self, sample_offset: i32, value: f64) -> &mut Self {
         self.points.push(ParameterPoint {
             sample_offset,
@@ -237,27 +286,33 @@ impl ParameterQueue {
     }
 }
 
+/// A batch of [`ParameterQueue`]s covering a single process block.
 #[derive(Debug, Clone, Default)]
 pub struct ParameterChanges {
     pub queues: SmallVec<[ParameterQueue; 16]>,
 }
 
 impl ParameterChanges {
+    /// Create an empty change batch.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Append a queue for one parameter.
     pub fn add_queue(&mut self, queue: ParameterQueue) -> &mut Self {
         self.queues.push(queue);
         self
     }
 
+    /// Whether there are any queued changes.
     pub fn is_empty(&self) -> bool {
         self.queues.is_empty()
     }
 }
 
 bitflags! {
+    /// Parameter behaviour flags from `clap_param_info`. See the CLAP spec
+    /// for precise semantics of each bit.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct ParameterFlags: u32 {
         const STEPPED                 = 1 << 0;
@@ -279,6 +334,7 @@ bitflags! {
     }
 }
 
+/// Description of a single plugin parameter.
 #[derive(Debug, Clone)]
 pub struct ParameterInfo {
     pub id: u32,
@@ -291,6 +347,9 @@ pub struct ParameterInfo {
 }
 
 impl ParameterInfo {
+    /// Create a new parameter with the given ID and display name. Defaults
+    /// to range `[0.0, 1.0]` with default `0.0` and no flags — use the
+    /// builder methods to refine.
     pub fn new(id: u32, name: impl Into<String>) -> Self {
         Self {
             id,
@@ -303,11 +362,13 @@ impl ParameterInfo {
         }
     }
 
+    /// Set the grouping path (slash-separated, e.g. `"Filter/Cutoff"`).
     pub fn module(mut self, module: impl Into<String>) -> Self {
         self.module = module.into();
         self
     }
 
+    /// Set the value range and default all at once.
     pub fn range(mut self, min: f64, max: f64, default: f64) -> Self {
         self.min_value = min;
         self.max_value = max;
@@ -315,12 +376,14 @@ impl ParameterInfo {
         self
     }
 
+    /// Set the parameter flags.
     pub fn flags(mut self, flags: ParameterFlags) -> Self {
         self.flags = flags;
         self
     }
 }
 
+/// Description of an audio port exposed by the plugin.
 #[derive(Debug, Clone)]
 pub struct AudioPortInfo {
     pub id: u32,
@@ -332,6 +395,7 @@ pub struct AudioPortInfo {
 }
 
 bitflags! {
+    /// Audio port capability flags from `clap_audio_port_info`.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct AudioPortFlags: u32 {
         const MAIN                      = 1 << 0;
@@ -341,13 +405,16 @@ bitflags! {
     }
 }
 
+/// Standard or custom audio port channel layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioPortType {
     Mono,
     Stereo,
+    /// Non-standard layout identified by its CLAP string tag.
     Custom(String),
 }
 
+/// Description of a note (MIDI) port exposed by the plugin.
 #[derive(Debug, Clone)]
 pub struct NotePortInfo {
     pub id: u32,
@@ -357,6 +424,7 @@ pub struct NotePortInfo {
 }
 
 bitflags! {
+    /// Bitset of note-event dialects a port can accept.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct NoteDialects: u32 {
         const CLAP     = 1 << 0;
@@ -366,6 +434,7 @@ bitflags! {
     }
 }
 
+/// A single note-event dialect (the port's preferred encoding).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteDialect {
     Clap,
@@ -374,6 +443,8 @@ pub enum NoteDialect {
     Midi2,
 }
 
+/// Voice allocation information reported by instruments that implement
+/// `CLAP_EXT_VOICE_INFO`.
 #[derive(Debug, Clone, Copy)]
 pub struct VoiceInfo {
     pub voice_count: u32,
@@ -381,6 +452,7 @@ pub struct VoiceInfo {
     pub supports_overlapping_notes: bool,
 }
 
+/// A predefined audio-port configuration the plugin can switch to.
 #[derive(Debug, Clone)]
 pub struct AudioPortConfig {
     pub id: u32,
@@ -393,6 +465,8 @@ pub struct AudioPortConfig {
     pub main_output_channel_count: u32,
 }
 
+/// A custom name for a single (port, channel, key) triple — used by
+/// drum kits and similar instruments.
 #[derive(Debug, Clone)]
 pub struct NoteName {
     pub name: String,
@@ -401,6 +475,7 @@ pub struct NoteName {
     pub key: i16,
 }
 
+/// Which use-case a state save/load is for, from `CLAP_EXT_STATE_CONTEXT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateContext {
     ForPreset,
@@ -422,6 +497,7 @@ impl From<StateContext> for clap_sys::ext::state_context::clap_plugin_state_cont
     }
 }
 
+/// 32-bit ARGB color used by track info and parameter indication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     pub alpha: u8,
@@ -431,6 +507,7 @@ pub struct Color {
 }
 
 impl Color {
+    /// Opaque color (`alpha = 255`).
     pub const fn rgb(red: u8, green: u8, blue: u8) -> Self {
         Self {
             alpha: 255,
@@ -440,6 +517,7 @@ impl Color {
         }
     }
 
+    /// Color with explicit alpha.
     pub const fn rgba(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
         Self {
             alpha,
@@ -450,6 +528,7 @@ impl Color {
     }
 }
 
+/// Track metadata the host exposes through `CLAP_EXT_TRACK_INFO`.
 #[derive(Debug, Clone, Default)]
 pub struct TrackInfo {
     pub name: Option<String>,
@@ -461,6 +540,8 @@ pub struct TrackInfo {
     pub is_master: bool,
 }
 
+/// State of automation recording for a given parameter, used by
+/// `CLAP_EXT_PARAM_INDICATION` to drive GUI feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamAutomationState {
     None,
@@ -470,6 +551,8 @@ pub enum ParamAutomationState {
     Overriding,
 }
 
+/// A page of eight "remote controls" suggested by the plugin, for host
+/// surfaces with physical knobs/faders.
 #[derive(Debug, Clone)]
 pub struct RemoteControlsPage {
     pub section_name: String,
@@ -479,6 +562,10 @@ pub struct RemoteControlsPage {
     pub is_for_preset: bool,
 }
 
+/// A transport-state request a plugin has issued via `CLAP_EXT_TRANSPORT_CONTROL`.
+///
+/// Drain these with [`ClapInstance::drain_transport_requests`](crate::ClapInstance::drain_transport_requests)
+/// and translate them to your host's transport model.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransportRequest {
     Start,
@@ -499,12 +586,15 @@ pub enum TransportRequest {
     ToggleRecord,
 }
 
+/// What a context menu action applies to: the plugin as a whole, or a
+/// specific parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuTarget {
     Global,
     Param(u32),
 }
 
+/// A single item in a plugin-supplied context menu.
 #[derive(Debug, Clone)]
 pub enum ContextMenuItem {
     Entry {
@@ -530,6 +620,7 @@ pub enum ContextMenuItem {
     EndSubmenu,
 }
 
+/// A request to reconfigure a single audio port's channel count/type.
 #[derive(Debug, Clone)]
 pub struct AudioPortConfigRequest {
     pub is_input: bool,
@@ -538,12 +629,14 @@ pub struct AudioPortConfigRequest {
     pub port_type: Option<String>,
 }
 
+/// Ambisonic channel ordering (Furse-Malham or Ambisonic Channel Number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmbisonicOrdering {
     Fuma,
     Acn,
 }
 
+/// Ambisonic normalization scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmbisonicNormalization {
     MaxN,
@@ -553,12 +646,14 @@ pub enum AmbisonicNormalization {
     N2d,
 }
 
+/// Combined ambisonic ordering + normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AmbisonicConfig {
     pub ordering: AmbisonicOrdering,
     pub normalization: AmbisonicNormalization,
 }
 
+/// Surround speaker positions (matches CLAP's `CLAP_SURROUND_*` constants).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SurroundChannel {
@@ -583,6 +678,8 @@ pub enum SurroundChannel {
 }
 
 impl SurroundChannel {
+    /// Map a raw CLAP surround channel ID to a [`SurroundChannel`]. Returns
+    /// `None` for IDs outside the known range.
     pub fn from_position(pos: u8) -> Option<Self> {
         match pos {
             0 => Some(Self::FrontLeft),
@@ -608,6 +705,8 @@ impl SurroundChannel {
     }
 }
 
+/// Event flags of a POSIX file descriptor registered by the plugin
+/// (`CLAP_EXT_POSIX_FD_SUPPORT`). Only available on Unix targets.
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosixFdFlags {
@@ -616,6 +715,8 @@ pub struct PosixFdFlags {
     pub error: bool,
 }
 
+/// Description of a trigger parameter from `CLAP_EXT_TRIGGERS` (a stateless
+/// momentary action, like "reset oscillators").
 #[derive(Debug, Clone)]
 pub struct TriggerInfo {
     pub id: u32,
@@ -624,6 +725,8 @@ pub struct TriggerInfo {
     pub module: String,
 }
 
+/// Description of a dynamic tuning table the plugin can use via
+/// `CLAP_EXT_TUNING`.
 #[derive(Debug, Clone)]
 pub struct TuningInfo {
     pub tuning_id: u32,
@@ -631,6 +734,7 @@ pub struct TuningInfo {
     pub is_dynamic: bool,
 }
 
+/// Undo delta-format capabilities reported by the plugin.
 #[derive(Debug, Clone, Copy)]
 pub struct UndoDeltaProperties {
     pub has_delta: bool,
@@ -638,6 +742,8 @@ pub struct UndoDeltaProperties {
     pub format_version: u32,
 }
 
+/// An undo step recorded by the plugin: its display name plus an opaque
+/// delta blob whose meaning is private to the plugin.
 #[derive(Debug, Clone)]
 pub struct UndoChange {
     pub name: String,
@@ -645,25 +751,30 @@ pub struct UndoChange {
     pub delta_can_undo: bool,
 }
 
+/// Size of the plugin's editor window in pixels.
 #[derive(Debug, Clone, Copy)]
 pub struct EditorSize {
     pub width: u32,
     pub height: u32,
 }
 
-/// An opaque handle to a native platform window, for embedding plugin GUIs.
+/// Opaque handle to a native platform window, used to embed a plugin GUI.
 ///
 /// Construct via [`WindowHandle::from_raw`].
 pub struct WindowHandle(*mut std::ffi::c_void);
 
 impl WindowHandle {
+    /// Wrap a raw platform window pointer.
+    ///
     /// # Safety
     /// `ptr` must be a valid platform-native view pointer for the target platform
-    /// (NSView on macOS, HWND on Windows, X11 Window ID on Linux).
+    /// (NSView on macOS, HWND on Windows, X11 Window ID on Linux). The pointer
+    /// must remain valid for as long as the plugin editor is open.
     pub unsafe fn from_raw(ptr: *mut std::ffi::c_void) -> Self {
         Self(ptr)
     }
 
+    /// The raw platform pointer this handle wraps.
     pub fn as_ptr(&self) -> *mut std::ffi::c_void {
         self.0
     }

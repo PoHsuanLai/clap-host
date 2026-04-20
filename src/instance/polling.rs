@@ -1,4 +1,6 @@
-//! Polling, GUI, context menu, undo, resource, and misc host-interaction methods.
+//! Polling host-state flags, opening/closing the plugin editor, context
+//! menus, triggers, remote controls, POSIX FDs, timers, and other
+//! main-thread host-interaction methods.
 
 use super::ClapInstance;
 use crate::cstr_to_string;
@@ -50,10 +52,17 @@ fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle
 }
 
 impl ClapInstance {
+    /// Whether the plugin implements `CLAP_EXT_GUI` and can open an editor.
     pub fn has_editor(&self) -> bool {
         !self.extensions.gui.gui.is_null()
     }
 
+    /// Create the plugin editor and embed it into the given native `parent`
+    /// window, returning the editor's initial size.
+    ///
+    /// # Errors
+    /// [`ClapError::GuiError`] if the plugin does not expose a GUI, or if
+    /// `create`/`set_parent` fails.
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         if self.extensions.gui.gui.is_null() {
             return Err(ClapError::GuiError("No GUI extension".to_string()));
@@ -107,6 +116,7 @@ impl ClapInstance {
         Ok(size)
     }
 
+    /// Hide and destroy the plugin editor, if one was opened. Idempotent.
     pub fn close_editor(&mut self) {
         if !self.flags.gui_created {
             return;
@@ -121,66 +131,86 @@ impl ClapInstance {
         self.flags.gui_created = false;
     }
 
+    /// Direct access to the shared [`HostState`] — useful if you need to
+    /// read a flag without consuming it or observe a field not wrapped by
+    /// the `poll_*` helpers.
     pub fn host_state(&self) -> &Arc<HostState> {
         &self.host_state
     }
 
+    /// Consume and return the `restart_requested` flag.
     pub fn poll_restart_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.lifecycle.restart_requested)
     }
 
+    /// Consume and return the `process_requested` flag (the plugin wants
+    /// `process()` to be called even if the host would otherwise skip it).
     pub fn poll_process_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.lifecycle.process_requested)
     }
 
+    /// Consume and return the `callback_requested` flag — call
+    /// [`Self::on_main_thread`] when this fires.
     pub fn poll_callback_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.lifecycle.callback_requested)
     }
 
+    /// Consume and return the `latency_changed` flag; fetch the new value
+    /// with [`Self::get_latency`].
     pub fn poll_latency_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.latency_changed)
     }
 
+    /// Consume and return the `tail_changed` flag; fetch the new value with
+    /// [`Self::get_tail`].
     pub fn poll_tail_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.tail_changed)
     }
 
+    /// Consume and return the `params_rescan_requested` flag — re-read
+    /// parameter metadata when this fires.
     pub fn poll_params_rescan(&self) -> bool {
         self.host_state
             .poll(&self.host_state.params.rescan_requested)
     }
 
+    /// Consume and return the `params_flush_requested` flag — call
+    /// [`Self::flush_params`] or run a process block when this fires.
     pub fn poll_params_flush_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.params.flush_requested)
     }
 
+    /// Consume and return the `state_dirty` flag — the plugin's state has
+    /// diverged from the last save.
     pub fn poll_state_dirty(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.state_dirty)
     }
 
+    /// Consume and return the `audio_ports.changed` flag.
     pub fn poll_audio_ports_changed(&self) -> bool {
         self.host_state.poll(&self.host_state.audio_ports.changed)
     }
 
+    /// Consume and return the `notes.ports_changed` flag.
     pub fn poll_note_ports_changed(&self) -> bool {
         self.host_state.poll(&self.host_state.notes.ports_changed)
     }
 
+    /// Consume and return the `gui.closed` flag.
     pub fn poll_gui_closed(&self) -> bool {
         self.host_state.poll(&self.host_state.gui.closed)
     }
 
-    /// Non-consuming peek at the restart flag. Unlike `poll_restart_requested`
-    /// (which clears the flag on read), this returns the current value without
-    /// resetting it. Useful for checking if a restart is pending without
-    /// consuming the notification.
+    /// Non-consuming peek at the restart flag. Unlike
+    /// [`Self::poll_restart_requested`] (which clears the flag on read),
+    /// this returns the current value without resetting it.
     pub fn needs_restart(&self) -> bool {
         self.host_state
             .lifecycle
@@ -188,8 +218,9 @@ impl ClapInstance {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Fire any expired timers. Call this periodically from the main thread.
-    /// Returns the number of timer callbacks fired.
+    /// Fire any expired timers the plugin registered via
+    /// `CLAP_EXT_TIMER_SUPPORT`. Call periodically from the main thread.
+    /// Returns the number of timer callbacks invoked.
     pub fn poll_timers(&mut self) -> usize {
         if self.extensions.system.timer_support.is_null() {
             return 0;
@@ -222,16 +253,20 @@ impl ClapInstance {
         fired
     }
 
+    /// Consume and return the `audio_ports.config_changed` flag.
     pub fn poll_audio_ports_config_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.audio_ports.config_changed)
     }
 
+    /// Consume and return the `remote_controls.changed` flag.
     pub fn poll_remote_controls_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.remote_controls.changed)
     }
 
+    /// Consume and return the page ID the plugin most recently suggested
+    /// the host switch to, or `None` if no suggestion is pending.
     pub fn poll_suggested_remote_page(&self) -> Option<u32> {
         let val = self
             .host_state
@@ -245,6 +280,7 @@ impl ClapInstance {
         }
     }
 
+    /// Drain all pending [`TransportRequest`]s the plugin has emitted.
     pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
         if let Ok(mut reqs) = self.host_state.transport.requests.lock() {
             std::mem::take(&mut *reqs)
@@ -253,21 +289,25 @@ impl ClapInstance {
         }
     }
 
+    /// Consume and return the `notes.names_changed` flag.
     pub fn poll_note_names_changed(&self) -> bool {
         self.host_state.poll(&self.host_state.notes.names_changed)
     }
 
+    /// Consume and return the `notes.voice_info_changed` flag.
     pub fn poll_voice_info_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.notes.voice_info_changed)
     }
 
+    /// Consume and return the `preset_loaded` flag.
     pub fn poll_preset_loaded(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.preset_loaded)
     }
 
-    /// Call `plugin.on_main_thread()` when the plugin has requested a main-thread callback.
+    /// Invoke the plugin's `on_main_thread` callback — call when
+    /// [`Self::poll_callback_requested`] fires.
     pub fn on_main_thread(&mut self) -> &mut Self {
         let plugin_ref = unsafe { &*self.plugin.as_ptr() };
         if let Some(f) = plugin_ref.on_main_thread {
@@ -276,12 +316,16 @@ impl ClapInstance {
         self
     }
 
+    /// Publish track metadata for the plugin to read via
+    /// `CLAP_EXT_TRACK_INFO`. Call [`Self::notify_track_info_changed`]
+    /// afterwards to ping the plugin.
     pub fn set_track_info(&self, info: TrackInfo) {
         if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
             *guard = Some(info);
         }
     }
 
+    /// Tell the plugin its track info has changed.
     pub fn notify_track_info_changed(&self) {
         if self.extensions.system.track_info.is_null() {
             return;
@@ -292,6 +336,7 @@ impl ClapInstance {
         }
     }
 
+    /// Number of remote-control pages the plugin exposes.
     pub fn remote_controls_page_count(&self) -> usize {
         if self.extensions.params.remote_controls.is_null() {
             return 0;
@@ -303,6 +348,7 @@ impl ClapInstance {
         }
     }
 
+    /// Describe the remote-controls page at `index`.
     pub fn get_remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
         if self.extensions.params.remote_controls.is_null() {
             return None;
@@ -322,6 +368,8 @@ impl ClapInstance {
         })
     }
 
+    /// Ask the plugin to supply the context-menu entries for `target`.
+    /// Returns `None` if the plugin does not implement context menus.
     pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
         if self.extensions.gui.context_menu.is_null() {
             return None;
@@ -356,6 +404,8 @@ impl ClapInstance {
         }
     }
 
+    /// Invoke a context-menu action the plugin previously reported via
+    /// [`Self::context_menu_populate`].
     pub fn context_menu_perform(&self, target: ContextMenuTarget, action_id: u32) -> bool {
         if self.extensions.gui.context_menu.is_null() {
             return false;
@@ -378,6 +428,8 @@ impl ClapInstance {
         unsafe { perform_fn(self.plugin.as_ptr(), &clap_target, action_id) }
     }
 
+    /// Number of trigger "parameters" (stateless momentary actions) the
+    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`.
     pub fn trigger_count(&self) -> usize {
         if self.extensions.system.triggers.is_null() {
             return 0;
@@ -389,6 +441,7 @@ impl ClapInstance {
         }
     }
 
+    /// Describe the trigger at `index`.
     pub fn get_trigger_info(&self, index: usize) -> Option<TriggerInfo> {
         if self.extensions.system.triggers.is_null() {
             return None;
@@ -407,6 +460,8 @@ impl ClapInstance {
         })
     }
 
+    /// Run a task that the plugin enqueued via `CLAP_EXT_THREAD_POOL`.
+    /// Call from a worker thread.
     pub fn thread_pool_exec(&self, task_index: u32) {
         if self.extensions.system.thread_pool.is_null() {
             return;
@@ -417,6 +472,7 @@ impl ClapInstance {
         }
     }
 
+    /// Tell the plugin its tuning table set has changed.
     pub fn notify_tuning_changed(&self) {
         if self.extensions.system.tuning.is_null() {
             return;
@@ -427,6 +483,8 @@ impl ClapInstance {
         }
     }
 
+    /// Fire `on_fd` for every POSIX FD the plugin has registered.
+    /// Returns the number of callbacks invoked.
     #[cfg(unix)]
     pub fn poll_posix_fds(&mut self) -> usize {
         if self.extensions.system.posix_fd_support.is_null() {

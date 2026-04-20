@@ -1,4 +1,4 @@
-//! RAII wrapper for `*const clap_plugin`.
+//! RAII wrapper for `*const clap_plugin` that calls `destroy()` on drop.
 
 use clap_sys::plugin::clap_plugin;
 
@@ -7,10 +7,13 @@ pub(crate) struct PluginHandle {
 }
 
 impl PluginHandle {
+    /// Wrap a raw plugin pointer. Takes ownership — the handle will call
+    /// `plugin.destroy()` on drop.
     pub fn new(ptr: *const clap_plugin) -> Self {
         Self { ptr }
     }
 
+    /// Raw pointer, for passing to CLAP functions that take a plugin pointer.
     pub fn as_ptr(&self) -> *const clap_plugin {
         self.ptr
     }

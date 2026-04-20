@@ -1,4 +1,8 @@
-//! Extension cache for CLAP plugin instances.
+//! One-time lookup cache of every CLAP extension the plugin implements.
+//!
+//! Built during `ClapInstance::load` so runtime methods can check a pointer
+//! instead of calling `get_extension` on every invocation. Fields are
+//! grouped by subsystem purely to keep the struct readable.
 
 use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
 use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;

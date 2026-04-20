@@ -1,13 +1,20 @@
+//! CLAP `clap_istream`/`clap_ostream` adapters backed by in-memory buffers.
+//!
+//! Used by state save/load — plugins read from an [`InputStream`] and write
+//! to an [`OutputStream`] without the host ever having to touch FFI.
+
 use clap_sys::stream::{clap_istream, clap_ostream};
 use std::ffi::c_void;
 use std::ptr;
 
+/// Writable stream the plugin appends bytes to during state save.
 pub struct OutputStream {
     buffer: Vec<u8>,
     stream: clap_ostream,
 }
 
 impl OutputStream {
+    /// Create an empty output stream.
     pub fn new() -> Self {
         Self {
             buffer: Vec::new(),
@@ -18,15 +25,19 @@ impl OutputStream {
         }
     }
 
+    /// Raw pointer to the `clap_ostream` for FFI. Valid only while `self`
+    /// is not moved or dropped.
     pub fn as_raw(&mut self) -> *const clap_ostream {
         self.stream.ctx = &mut self.buffer as *mut Vec<u8> as *mut c_void;
         &self.stream
     }
 
+    /// Borrow the bytes written so far.
     pub fn data(&self) -> &[u8] {
         &self.buffer
     }
 
+    /// Consume the stream and return the accumulated bytes.
     pub fn into_data(self) -> Vec<u8> {
         self.buffer
     }
@@ -49,6 +60,8 @@ unsafe extern "C" fn ostream_write(
     size as i64
 }
 
+/// Readable stream that hands out slices of a caller-owned byte buffer
+/// during state load.
 pub struct InputStream<'a> {
     data: &'a [u8],
     position: usize,
@@ -56,6 +69,7 @@ pub struct InputStream<'a> {
 }
 
 impl<'a> InputStream<'a> {
+    /// Wrap an existing byte slice as a CLAP input stream.
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             data,
@@ -67,16 +81,19 @@ impl<'a> InputStream<'a> {
         }
     }
 
-    /// The returned pointer is only valid for the lifetime of this `InputStream`.
+    /// Raw pointer to the `clap_istream` for FFI. Valid only for the
+    /// lifetime of `self`.
     pub fn as_raw(&mut self) -> *const clap_istream {
         self.stream.ctx = self as *mut InputStream as *mut c_void;
         &self.stream
     }
 
+    /// Number of bytes consumed so far.
     pub fn position(&self) -> usize {
         self.position
     }
 
+    /// Number of bytes left to read.
     pub fn remaining(&self) -> usize {
         self.data.len() - self.position
     }

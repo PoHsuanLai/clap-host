@@ -826,9 +826,9 @@ fn test_host_thread_check_audio_thread() {
     );
 
     // Set the audio_thread_id to the current thread, then check
-    if let Ok(mut guard) = state2.audio_thread_id.lock() {
-        *guard = Some(std::thread::current().id());
-    }
+    state2
+        .audio_thread_id
+        .store(Some(std::sync::Arc::new(std::thread::current().id())));
     assert!(
         unsafe { is_audio(raw) },
         "Current thread should be audio after setting audio_thread_id"

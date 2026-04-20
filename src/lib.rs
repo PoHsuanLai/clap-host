@@ -1,16 +1,16 @@
 //! Safe, ergonomic API for hosting CLAP audio plugins.
-//! Handles low-level FFI, event list implementations, and host callbacks.
+//!
+//! `clap-host` wraps [CLAP](https://cleveraudio.org/) FFI so you can load
+//! plugins, drive audio/MIDI processing, and respond to host-side callbacks
+//! without writing `unsafe` yourself. MIDI uses the workspace-wide
+//! [`tutti_midi::MidiEvent`] UMP type (re-exported as [`MidiEvent`]).
 //!
 //! ## Example
 //!
 //! ```ignore
 //! use clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
 //!
-//! // Load a CLAP plugin
 //! let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
-//!
-//! // Process audio with MIDI — events use the workspace-wide
-//! // `tutti_midi::MidiEvent` (UMP) type, re-exported here.
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
 //! plugin.process(&mut buffer, &ProcessContext {
 //!     midi: &[MidiEvent::note_on(0, 0, 60, 16384)],
@@ -25,6 +25,9 @@ pub mod host;
 pub mod instance;
 pub mod types;
 
+/// Copy a nul-terminated C string into an owned `String`, substituting lossy
+/// replacement for invalid UTF-8. Returns an empty string if `ptr` is null.
+///
 /// # Safety
 /// `ptr` must be null or point to a valid, nul-terminated C string.
 pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {

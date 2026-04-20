@@ -1,4 +1,4 @@
-//! Parameter methods for ClapInstance.
+//! Parameter-query and parameter-update methods for [`ClapInstance`].
 
 use super::ext;
 use super::ClapInstance;
@@ -11,6 +11,8 @@ use clap_sys::ext::param_indication::{
 };
 use std::ptr;
 
+/// How a host surface control (e.g. a hardware knob) is bound to a plugin
+/// parameter, per `CLAP_EXT_PARAM_INDICATION`.
 #[derive(Debug, Clone)]
 pub struct ParamMapping {
     pub param_id: u32,
@@ -21,6 +23,9 @@ pub struct ParamMapping {
 }
 
 impl ParamMapping {
+    /// Create a mapping entry for the given parameter.
+    /// Set `has_mapping = false` to tell the plugin the parameter is no
+    /// longer mapped to any physical control.
     pub fn new(param_id: u32, has_mapping: bool) -> Self {
         Self {
             param_id,
@@ -31,16 +36,19 @@ impl ParamMapping {
         }
     }
 
+    /// Color hint for the mapped control's LED/ring (builder style).
     pub fn color(mut self, color: Color) -> Self {
         self.color = Some(color);
         self
     }
 
+    /// Short label for the mapped control (builder style).
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
+    /// Longer description of the mapping (builder style).
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
@@ -57,6 +65,8 @@ fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
 }
 
 impl ClapInstance {
+    /// Number of parameters the plugin exposes. Returns 0 if the plugin
+    /// does not implement `CLAP_EXT_PARAMS`.
     pub fn parameter_count(&self) -> usize {
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
             return 0;
@@ -67,6 +77,8 @@ impl ClapInstance {
         unsafe { count_fn(self.plugin.as_ptr()) as usize }
     }
 
+    /// Current value of a parameter, or `None` if the plugin does not
+    /// support the extension or rejects the ID.
     pub fn parameter(&self, id: u32) -> Option<f64> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_value_fn = ext.get_value?;
@@ -74,6 +86,8 @@ impl ClapInstance {
         unsafe { get_value_fn(self.plugin.as_ptr(), id, &mut value) }.then_some(value)
     }
 
+    /// Full metadata for the parameter at the given `index` (0-based,
+    /// `< parameter_count()`).
     pub fn parameter_info(&self, index: u32) -> Option<ParameterInfo> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_info_fn = ext.get_info?;
@@ -94,13 +108,16 @@ impl ClapInstance {
         })
     }
 
+    /// Collect metadata for every parameter.
     pub fn parameters(&self) -> Vec<ParameterInfo> {
         let count = self.parameter_count() as u32;
         (0..count).filter_map(|i| self.parameter_info(i)).collect()
     }
 
-    /// Flush parameter changes outside of process(). Sends input events to
-    /// the plugin and collects any output events it produces.
+    /// Deliver parameter changes outside of `process()` via
+    /// `clap_plugin_params.flush()`. Returns events produced by the plugin
+    /// in response. Returns empty if the plugin does not implement params
+    /// or lacks a flush function.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
             return Vec::new();
@@ -124,12 +141,14 @@ impl ClapInstance {
         output_list.take_events()
     }
 
-    /// Set a single parameter value immediately via flush.
+    /// Convenience wrapper that flushes a single `PARAM_VALUE` event.
     pub fn set_parameter(&mut self, id: u32, value: f64) -> &mut Self {
         self.flush_params(vec![ClapEvent::param_value(0, id, value)]);
         self
     }
 
+    /// Inform the plugin about a host-surface → parameter mapping. No-op if
+    /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`.
     pub fn set_param_mapping(&self, mapping: &ParamMapping) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
             return;
@@ -165,6 +184,9 @@ impl ClapInstance {
         }
     }
 
+    /// Inform the plugin of a parameter's automation state so it can update
+    /// UI feedback (e.g. knob rings). No-op if the plugin does not implement
+    /// `CLAP_EXT_PARAM_INDICATION`.
     pub fn set_param_automation(
         &self,
         param_id: u32,

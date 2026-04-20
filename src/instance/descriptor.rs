@@ -1,8 +1,6 @@
-//! Shared descriptor loading used by both `probe` and `load_with_library`.
-//!
-//! The two entry points need identical setup through "get the first plugin's
-//! descriptor from the factory" before they diverge (probe returns metadata,
-//! load instantiates the plugin). Everything up to that point lives here.
+//! Shared descriptor-loading code used by both `probe` and
+//! `load_with_library`. Everything through "get the first plugin descriptor
+//! from the factory" lives here; the two entry points then diverge.
 
 use super::entry_registry_acquire;
 use super::EntryGuard;
@@ -15,7 +13,6 @@ use clap_sys::plugin::clap_plugin_descriptor;
 use std::ffi::{CStr, CString};
 use std::path::Path;
 
-/// Everything probe and load both compute before diverging.
 pub(super) struct LoadedDescriptor<'lib> {
     pub entry_guard: EntryGuard,
     pub factory_ptr: *const clap_plugin_factory,

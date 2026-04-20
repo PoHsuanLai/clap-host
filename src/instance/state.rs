@@ -1,4 +1,4 @@
-//! State save/load methods for ClapInstance.
+//! Plugin state save/load and preset loading.
 
 use super::ext;
 use super::ClapInstance;
@@ -10,6 +10,11 @@ use std::path::Path;
 use std::ptr;
 
 impl ClapInstance {
+    /// Serialize the plugin's state to bytes via `CLAP_EXT_STATE`.
+    ///
+    /// # Errors
+    /// [`ClapError::StateError`] if the plugin does not implement state or
+    /// its `save` callback returns failure.
     pub fn state(&self) -> Result<Vec<u8>> {
         let state_ext = unsafe { ext::opt(self.extensions.state.state) }
             .ok_or_else(|| ClapError::StateError("No state extension".to_string()))?;
@@ -25,6 +30,12 @@ impl ClapInstance {
         Ok(stream.into_data())
     }
 
+    /// Restore plugin state from bytes previously returned by [`Self::state`].
+    /// Empty slices are treated as a no-op.
+    ///
+    /// # Errors
+    /// [`ClapError::StateError`] if the plugin does not implement state or
+    /// its `load` callback rejects the data.
     pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -44,7 +55,9 @@ impl ClapInstance {
         Ok(())
     }
 
-    /// Falls back to `state()` if the plugin doesn't support CLAP_EXT_STATE_CONTEXT.
+    /// Save state, telling the plugin whether it is being saved for a
+    /// preset, project, or duplicate. Falls back to [`Self::state`] if the
+    /// plugin does not implement `CLAP_EXT_STATE_CONTEXT`.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
             if let Some(save_fn) = ext.save {
@@ -57,7 +70,9 @@ impl ClapInstance {
         self.state()
     }
 
-    /// Falls back to `set_state()` if the plugin doesn't support CLAP_EXT_STATE_CONTEXT.
+    /// Load state with a specific [`StateContext`]. Falls back to
+    /// [`Self::set_state`] if the plugin does not implement
+    /// `CLAP_EXT_STATE_CONTEXT`.
     pub fn set_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -73,10 +88,17 @@ impl ClapInstance {
         self.set_state(data)
     }
 
+    /// Whether the plugin implements `CLAP_EXT_STATE_CONTEXT`.
     pub fn supports_state_context(&self) -> bool {
         !self.extensions.state.context.is_null()
     }
 
+    /// Ask the plugin to load a preset from the file at `path` via
+    /// `CLAP_EXT_PRESET_LOAD`.
+    ///
+    /// # Errors
+    /// [`ClapError::StateError`] if the plugin doesn't implement preset
+    /// loading, the path isn't valid UTF-8, or the plugin rejects the load.
     pub fn load_preset(&mut self, path: &Path) -> Result<()> {
         let ext = unsafe { ext::opt(self.extensions.state.preset_load) }
             .ok_or_else(|| ClapError::StateError("No preset-load extension".to_string()))?;

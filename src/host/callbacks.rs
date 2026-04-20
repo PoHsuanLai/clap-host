@@ -101,13 +101,11 @@ unsafe extern "C" fn host_thread_check_is_main(host: *const clap_host) -> bool {
 
 unsafe extern "C" fn host_thread_check_is_audio(host: *const clap_host) -> bool {
     match get_host_state(host) {
-        Some(state) => {
-            if let Ok(guard) = state.audio_thread_id.lock() {
-                *guard == Some(std::thread::current().id())
-            } else {
-                false
-            }
-        }
+        Some(state) => state
+            .audio_thread_id
+            .load()
+            .as_deref()
+            .is_some_and(|id| *id == std::thread::current().id()),
         None => false,
     }
 }

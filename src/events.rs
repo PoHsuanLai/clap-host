@@ -20,11 +20,11 @@ use clap_sys::events::{
 };
 use std::ptr;
 
-/// CLAP event wrapping the actual C structs for correct memory layout.
+/// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
+/// struct so a pointer to its `header` field can be cast back by the plugin.
 ///
-/// Each variant stores the corresponding `#[repr(C)]` struct from clap-sys,
-/// so that a pointer to its `header` field can be safely cast by the plugin
-/// back to the full event struct type.
+/// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
+/// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi_event`].
 #[allow(dead_code)]
 pub enum ClapEvent {
     NoteOn(clap_event_note),
@@ -37,19 +37,22 @@ pub enum ClapEvent {
     ParamMod(clap_event_param_mod),
     ParamGestureBegin(clap_event_param_gesture),
     ParamGestureEnd(clap_event_param_gesture),
-    /// Sysex owns the data buffer; the inner C struct's `buffer` pointer
-    /// points into `_data`. Must not be moved after construction.
+    /// Sysex event that owns its buffer. The inner C struct's `buffer`
+    /// pointer aliases `_data`, so this variant must not be moved out of
+    /// its containing [`InputEventList`]/[`OutputEventList`].
     MidiSysex {
         inner: clap_event_midi_sysex,
         _data: Vec<u8>,
     },
 }
 
-// Safety: Events don't contain non-Send types (cookie is just passed through)
+// Events contain only POD and owned `Vec<u8>`. The plugin cookie pointer
+// is opaque and only ever passed back through to the plugin.
 unsafe impl Send for ClapEvent {}
 unsafe impl Sync for ClapEvent {}
 
 impl ClapEvent {
+    /// Borrow the common CLAP event header (time, type, space ID, flags).
     pub fn header(&self) -> &clap_event_header {
         match self {
             ClapEvent::NoteOn(e) => &e.header,
@@ -66,6 +69,7 @@ impl ClapEvent {
         }
     }
 
+    /// Build a CLAP note-on event. `velocity` is normalized to `[0.0, 1.0]`.
     pub fn note_on(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
         ClapEvent::NoteOn(clap_event_note {
             header: clap_event_header {
@@ -83,6 +87,7 @@ impl ClapEvent {
         })
     }
 
+    /// Build a CLAP note-off event. `velocity` is normalized to `[0.0, 1.0]`.
     pub fn note_off(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
         ClapEvent::NoteOff(clap_event_note {
             header: clap_event_header {
@@ -100,6 +105,7 @@ impl ClapEvent {
         })
     }
 
+    /// Build a generic 3-byte MIDI-1 event (status + two data bytes).
     pub fn midi(time: u32, port_index: u16, data: [u8; 3]) -> Self {
         ClapEvent::Midi(clap_event_midi {
             header: clap_event_header {
@@ -114,6 +120,9 @@ impl ClapEvent {
         })
     }
 
+    /// Build a parameter-value event. Targets every note/port/channel/key
+    /// (wildcard `-1`) — use the constructors on `clap_sys` directly if you
+    /// need to scope more tightly.
     pub fn param_value(time: u32, param_id: u32, value: f64) -> Self {
         ClapEvent::ParamValue(clap_event_param_value {
             header: clap_event_header {
@@ -133,6 +142,7 @@ impl ClapEvent {
         })
     }
 
+    /// Build a note-expression event targeting a note by its CLAP `note_id`.
     pub fn note_expression(
         time: u32,
         expression_type: NoteExpressionType,
@@ -166,12 +176,13 @@ impl ClapEvent {
         })
     }
 
-    /// Build a `ClapEvent` from a Tutti UMP [`MidiEvent`]. The UMP is
-    /// downconverted to MIDI-1 via `tutti_midi::MidiEvent::to_midi1_bytes`
+    /// Build a `ClapEvent` from a Tutti UMP [`MidiEvent`].
+    ///
+    /// The UMP is downconverted via `tutti_midi::MidiEvent::to_midi1_bytes`
     /// and encoded into the matching CLAP event shape (typed NoteOn/Off
-    /// for channel-voice notes, generic `Midi` DataEvent for everything
-    /// else). Returns `None` for UMP variants with no MIDI-1 form
-    /// (per-note controllers, SysEx, utility).
+    /// for channel-voice notes, generic `Midi` for everything else).
+    /// Returns `None` for UMP variants with no MIDI-1 form (per-note
+    /// controllers, SysEx, utility).
     pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
         let (bytes, _len) = event.to_midi1_bytes()?;
         let time = event.frame_offset;
@@ -194,11 +205,12 @@ impl ClapEvent {
         }
     }
 
-    /// Convert a `ClapEvent` back to a Tutti UMP [`MidiEvent`]. Reads
-    /// typed NoteOn/Off events back to 3-byte wire form, passes `Midi`
-    /// events through directly, then lets `MidiEvent::from_midi1_bytes`
-    /// upconvert velocity/CC/pitch-bend resolution. Returns `None` for
-    /// non-MIDI event types (NoteExpression, ParamValue, etc.).
+    /// Convert a `ClapEvent` back to a Tutti UMP [`MidiEvent`].
+    ///
+    /// Typed NoteOn/Off events are re-serialized to 3-byte wire form and
+    /// `Midi` events pass through; `MidiEvent::from_midi1_bytes` then
+    /// upconverts velocity/CC/pitch-bend resolution. Returns `None` for
+    /// non-MIDI variants (NoteExpression, ParamValue, etc.).
     pub fn to_midi_event(&self) -> Option<MidiEvent> {
         match self {
             ClapEvent::NoteOn(e) => {
@@ -217,16 +229,24 @@ impl ClapEvent {
     }
 }
 
+/// Common interface shared by [`InputEventList`] and [`OutputEventList`].
 pub trait EventList {
+    /// Number of events currently held in the list.
     fn len(&self) -> usize;
 
+    /// Whether the list has no events.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Remove all events.
     fn clear(&mut self);
 }
 
+/// Owned list of input events passed into `clap_plugin.process()`.
+///
+/// The `#[repr(C)]` layout places `clap_input_events` first so that
+/// [`Self::as_raw`] pointers are valid for the plugin's FFI expectations.
 #[repr(C)]
 pub struct InputEventList {
     pub(crate) list: clap_input_events,
@@ -234,6 +254,7 @@ pub struct InputEventList {
 }
 
 impl InputEventList {
+    /// Create an empty input event list.
     pub fn new() -> Self {
         Self {
             list: clap_input_events {
@@ -245,6 +266,7 @@ impl InputEventList {
         }
     }
 
+    /// Create an input event list pre-populated with the given events.
     pub fn from_events(events: Vec<ClapEvent>) -> Self {
         Self {
             list: clap_input_events {
@@ -256,6 +278,8 @@ impl InputEventList {
         }
     }
 
+    /// Convert a [`MidiEvent`] to a [`ClapEvent`] and append it. UMP
+    /// variants without a MIDI-1 form are silently skipped.
     pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
         if let Some(clap_event) = ClapEvent::from_midi_event(event) {
             self.events.push(clap_event);
@@ -263,6 +287,7 @@ impl InputEventList {
         self
     }
 
+    /// Batch version of [`add_midi`](Self::add_midi).
     pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
         for event in events {
             if let Some(clap_event) = ClapEvent::from_midi_event(event) {
@@ -272,6 +297,8 @@ impl InputEventList {
         self
     }
 
+    /// Flatten every [`ParameterPoint`] in `changes` into a CLAP
+    /// `PARAM_VALUE` event and append.
     pub fn add_param_changes(&mut self, changes: &ParameterChanges) -> &mut Self {
         for queue in &changes.queues {
             for point in &queue.points {
@@ -285,6 +312,7 @@ impl InputEventList {
         self
     }
 
+    /// Append each [`NoteExpressionValue`] as a CLAP `NOTE_EXPRESSION` event.
     pub fn add_note_expressions(&mut self, expressions: &[NoteExpressionValue]) -> &mut Self {
         for expr in expressions {
             self.events.push(ClapEvent::note_expression(
@@ -297,15 +325,20 @@ impl InputEventList {
         self
     }
 
+    /// Stable sort events by their `header.time`. CLAP requires inputs to
+    /// be in non-decreasing time order.
     pub fn sort_by_time(&mut self) -> &mut Self {
         self.events.sort_by_key(|e| e.header().time);
         self
     }
 
+    /// Raw pointer to the `clap_input_events` struct for FFI. Valid only
+    /// while `self` is not moved or dropped.
     pub fn as_raw(&self) -> *const clap_input_events {
         &self.list as *const _ as *const _
     }
 
+    /// Borrow the events currently in the list.
     pub fn events(&self) -> &[ClapEvent] {
         &self.events
     }
@@ -343,6 +376,11 @@ unsafe extern "C" fn input_events_get(
     event_list.events[index as usize].header() as *const _
 }
 
+/// Owned list that collects events produced by the plugin during
+/// `clap_plugin.process()`.
+///
+/// As with [`InputEventList`], `#[repr(C)]` puts `clap_output_events` first
+/// so the FFI pointer returned by [`Self::as_raw_mut`] has the correct shape.
 #[repr(C)]
 pub struct OutputEventList {
     pub(crate) list: clap_output_events,
@@ -350,6 +388,7 @@ pub struct OutputEventList {
 }
 
 impl OutputEventList {
+    /// Create an empty output event list.
     pub fn new() -> Self {
         Self {
             list: clap_output_events {
@@ -360,18 +399,24 @@ impl OutputEventList {
         }
     }
 
+    /// Raw pointer to the `clap_output_events` struct for FFI. Valid only
+    /// while `self` is not moved or dropped.
     pub fn as_raw_mut(&mut self) -> *mut clap_output_events {
         &mut self.list as *mut _ as *mut _
     }
 
+    /// Borrow the events the plugin has pushed.
     pub fn events(&self) -> &[ClapEvent] {
         &self.events
     }
 
+    /// Move all events out of the list, leaving it empty.
     pub fn take_events(&mut self) -> Vec<ClapEvent> {
         std::mem::take(&mut self.events)
     }
 
+    /// Extract MIDI events from the output as UMP [`MidiEvent`]s,
+    /// dropping non-MIDI events.
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
         self.events
             .iter()
@@ -379,6 +424,8 @@ impl OutputEventList {
             .collect()
     }
 
+    /// Extract parameter-value events into a [`ParameterChanges`] grouped
+    /// by parameter ID.
     pub fn to_param_changes(&self) -> ParameterChanges {
         let mut changes = ParameterChanges::new();
         let mut queues: std::collections::HashMap<u32, ParameterQueue> =
@@ -403,6 +450,8 @@ impl OutputEventList {
         changes
     }
 
+    /// Extract note-expression events into the safe
+    /// [`NoteExpressionValue`] form, dropping other events.
     pub fn to_note_expressions(&self) -> Vec<NoteExpressionValue> {
         self.events
             .iter()
@@ -521,8 +570,8 @@ unsafe extern "C" fn output_events_try_push(
             let e = &*(event as *const clap_event_midi_sysex);
             if !e.buffer.is_null() && e.size > 0 {
                 let data = std::slice::from_raw_parts(e.buffer, e.size as usize).to_vec();
-                // Build the inner struct with a pointer into the owned Vec.
-                // The Vec is stored alongside and won't be moved independently.
+                // The buffer pointer aliases `data`; the ClapEvent::MidiSysex
+                // variant keeps both together and is never moved independently.
                 let inner = clap_event_midi_sysex {
                     header: *header,
                     port_index: e.port_index,
@@ -549,7 +598,6 @@ mod tests {
         let event = ClapEvent::note_on(0, 0, 60, 0.8);
         let header = event.header();
 
-        // Call the raw FFI function via the output list
         let list_ptr = output.as_raw_mut();
         unsafe {
             let push_fn = (*list_ptr).try_push.unwrap();
@@ -574,7 +622,6 @@ mod tests {
 
     #[test]
     fn test_output_events_push_null_list() {
-        // Build a valid event to pass
         let event = ClapEvent::note_on(0, 0, 60, 0.8);
         let header = event.header();
         unsafe {
@@ -589,12 +636,11 @@ mod tests {
         let mut output = OutputEventList::new();
         let list_ptr = output.as_raw_mut();
 
-        // Create a header with an unknown event type
         let header = clap_event_header {
             size: std::mem::size_of::<clap_event_header>() as u32,
             time: 0,
             space_id: CLAP_CORE_EVENT_SPACE_ID,
-            type_: 9999, // Unknown type
+            type_: 9999,
             flags: 0,
         };
         unsafe {
@@ -651,7 +697,6 @@ mod tests {
             assert!(result);
         }
         assert_eq!(output.events().len(), 1);
-        // Verify the data was copied (not just pointer stored)
         match &output.events()[0] {
             ClapEvent::MidiSysex { _data, .. } => {
                 assert_eq!(_data, &sysex_data);
@@ -684,7 +729,7 @@ mod tests {
                 list_ptr,
                 &sysex as *const clap_event_midi_sysex as *const clap_event_header,
             );
-            // Should return true but not add event (null buffer skipped)
+            // try_push accepts the event but a null sysex buffer yields no stored event.
             assert!(result);
         }
         assert!(output.events().is_empty());

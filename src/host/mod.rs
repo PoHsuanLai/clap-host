@@ -1,4 +1,6 @@
-//! CLAP host implementation providing host-side callbacks for plugin communication.
+//! Host side of the CLAP protocol — the `clap_host` vtable, the shared
+//! [`HostState`] plugins write into, and the stream adapters for state
+//! save/load.
 
 mod callbacks;
 pub mod state;
@@ -42,12 +44,20 @@ use std::ffi::{c_void, CStr};
 use std::ptr;
 use std::sync::Arc;
 
+/// Owned `clap_host` vtable handed to the plugin during instantiation.
+///
+/// The `inner` FFI struct stores an `Arc::as_ptr` borrow of `state` in its
+/// `host_data` slot, so [`ClapHost`] must not be moved independently of
+/// its [`HostState`]; in practice it lives boxed inside a `ClapInstance`.
 pub struct ClapHost {
     inner: clap_host,
     state: Arc<HostState>,
 }
 
 impl ClapHost {
+    /// Build a host vtable backed by the given [`HostState`]. The state is
+    /// shared (via `Arc`) with [`ClapInstance`](crate::ClapInstance) so both
+    /// sides can observe plugin callbacks.
     pub fn new(state: Arc<HostState>) -> Self {
         let mut host = Self {
             inner: clap_host {
@@ -68,10 +78,13 @@ impl ClapHost {
         host
     }
 
+    /// Raw pointer suitable for passing to the plugin's `create_plugin`.
+    /// Valid as long as `self` is not moved or dropped.
     pub fn as_raw(&self) -> *const clap_host {
         &self.inner
     }
 
+    /// Shared access to the [`HostState`] this vtable dispatches callbacks into.
     pub fn state(&self) -> &Arc<HostState> {
         &self.state
     }

@@ -1,5 +1,6 @@
 //! Audio processing methods for ClapInstance.
 
+use super::config::{PortLayout, ProcessScratch};
 use super::ClapInstance;
 use crate::error::{ClapError, Result};
 use crate::events::{InputEventList, OutputEventList};
@@ -47,12 +48,12 @@ pub struct ProcessContext<'a> {
 pub trait ClapSample: Copy + Default + 'static {
     fn requires_f64() -> bool;
 
-    fn build_port_buffers(
-        port_channels: &[u32],
-        ptrs: &mut Vec<*mut Self>,
-        scratch: &mut Vec<Vec<Self>>,
-        num_samples: usize,
-    ) -> Vec<clap_audio_buffer>;
+    /// Construct a `clap_audio_buffer` from a base pointer into a channel-
+    /// pointer array (`data32` / `data64` selected per sample type).
+    fn make_port_buffer(ptrs_base: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
+
+    /// Borrow the instance's pre-allocated RT scratch for this sample type.
+    fn scratch_mut(instance: &mut ClapInstance) -> &mut ProcessScratch<Self>;
 }
 
 impl ClapSample for f32 {
@@ -60,28 +61,18 @@ impl ClapSample for f32 {
         false
     }
 
-    fn build_port_buffers(
-        port_channels: &[u32],
-        ptrs: &mut Vec<*mut f32>,
-        scratch: &mut Vec<Vec<f32>>,
-        num_samples: usize,
-    ) -> Vec<clap_audio_buffer> {
-        pad_scratch(port_channels, ptrs, scratch, num_samples);
-        let mut offset = 0usize;
-        port_channels
-            .iter()
-            .map(|&ch_count| {
-                let buf = clap_audio_buffer {
-                    data32: ptrs[offset..].as_mut_ptr(),
-                    data64: ptr::null_mut(),
-                    channel_count: ch_count,
-                    latency: 0,
-                    constant_mask: 0,
-                };
-                offset += ch_count as usize;
-                buf
-            })
-            .collect()
+    fn make_port_buffer(ptrs_base: *mut *mut f32, channel_count: u32) -> clap_audio_buffer {
+        clap_audio_buffer {
+            data32: ptrs_base,
+            data64: ptr::null_mut(),
+            channel_count,
+            latency: 0,
+            constant_mask: 0,
+        }
+    }
+
+    fn scratch_mut(instance: &mut ClapInstance) -> &mut ProcessScratch<f32> {
+        &mut instance.scratch_f32
     }
 }
 
@@ -90,42 +81,88 @@ impl ClapSample for f64 {
         true
     }
 
-    fn build_port_buffers(
-        port_channels: &[u32],
-        ptrs: &mut Vec<*mut f64>,
-        scratch: &mut Vec<Vec<f64>>,
-        num_samples: usize,
-    ) -> Vec<clap_audio_buffer> {
-        pad_scratch(port_channels, ptrs, scratch, num_samples);
-        let mut offset = 0usize;
-        port_channels
-            .iter()
-            .map(|&ch_count| {
-                let buf = clap_audio_buffer {
-                    data32: ptr::null_mut(),
-                    data64: ptrs[offset..].as_mut_ptr(),
-                    channel_count: ch_count,
-                    latency: 0,
-                    constant_mask: 0,
-                };
-                offset += ch_count as usize;
-                buf
-            })
-            .collect()
+    fn make_port_buffer(ptrs_base: *mut *mut f64, channel_count: u32) -> clap_audio_buffer {
+        clap_audio_buffer {
+            data32: ptr::null_mut(),
+            data64: ptrs_base,
+            channel_count,
+            latency: 0,
+            constant_mask: 0,
+        }
+    }
+
+    fn scratch_mut(instance: &mut ClapInstance) -> &mut ProcessScratch<f64> {
+        &mut instance.scratch_f64
     }
 }
 
-fn pad_scratch<T: Copy + Default>(
-    port_channels: &[u32],
-    ptrs: &mut Vec<*mut T>,
-    scratch: &mut Vec<Vec<T>>,
-    num_samples: usize,
+/// Populate a [`ProcessScratch`]'s `input_ptrs` / `output_ptrs` / `*_bufs`
+/// for the current process call. Every vector was sized in `activate()` so
+/// this reuses capacity without allocating — `clear` + `push` only.
+///
+/// Channel pool layout: `channels[0..input_channels_total]` serves the
+/// input side; `channels[input_channels_total..]` serves outputs.
+fn refill_port_buffers<T: ClapSample>(
+    scratch: &mut ProcessScratch<T>,
+    caller_input_ptrs: &[*mut T],
+    caller_output_ptrs: &[*mut T],
+    input_ports: &[u32],
+    output_ports: &[u32],
 ) {
-    let total_needed: usize = port_channels.iter().map(|&c| c as usize).sum();
-    while ptrs.len() < total_needed {
-        scratch.push(vec![T::default(); num_samples]);
-        let buf = scratch.last_mut().expect("just pushed");
-        ptrs.push(buf.as_mut_ptr());
+    let wanted_in: usize = input_ports.iter().map(|&c| c as usize).sum();
+    let wanted_out: usize = output_ports.iter().map(|&c| c as usize).sum();
+
+    scratch.input_ptrs.clear();
+    scratch.output_ptrs.clear();
+    scratch.input_bufs.clear();
+    scratch.output_bufs.clear();
+
+    // Inputs: caller's channel pointers first, then zero-filled pad from
+    // the input half of the channel pool.
+    let caller_in_used = caller_input_ptrs.len().min(wanted_in);
+    scratch
+        .input_ptrs
+        .extend_from_slice(&caller_input_ptrs[..caller_in_used]);
+    let mut pool_idx = caller_in_used;
+    while scratch.input_ptrs.len() < wanted_in {
+        // Pool index stays within the input half (0..wanted_in).
+        let ch = &mut scratch.channels[pool_idx];
+        ch.fill(T::default());
+        scratch.input_ptrs.push(ch.as_mut_ptr());
+        pool_idx += 1;
+    }
+
+    // Outputs: caller's pointers + pad from the output half of the pool.
+    let caller_out_used = caller_output_ptrs.len().min(wanted_out);
+    scratch
+        .output_ptrs
+        .extend_from_slice(&caller_output_ptrs[..caller_out_used]);
+    let output_pool_base = wanted_in;
+    let mut pool_idx = output_pool_base + caller_out_used;
+    while scratch.output_ptrs.len() < wanted_out {
+        let ch = &mut scratch.channels[pool_idx];
+        ch.fill(T::default());
+        scratch.output_ptrs.push(ch.as_mut_ptr());
+        pool_idx += 1;
+    }
+
+    // Build per-port clap_audio_buffer descriptors as slices into the
+    // ptr arrays. The slice pointers remain valid because `input_ptrs` /
+    // `output_ptrs` have frozen capacity (set in `activate()`).
+    let input_ptrs_base = scratch.input_ptrs.as_mut_ptr();
+    let mut offset = 0usize;
+    for &ch_count in input_ports {
+        let base = unsafe { input_ptrs_base.add(offset) };
+        scratch.input_bufs.push(T::make_port_buffer(base, ch_count));
+        offset += ch_count as usize;
+    }
+
+    let output_ptrs_base = scratch.output_ptrs.as_mut_ptr();
+    let mut offset = 0usize;
+    for &ch_count in output_ports {
+        let base = unsafe { output_ptrs_base.add(offset) };
+        scratch.output_bufs.push(T::make_port_buffer(base, ch_count));
+        offset += ch_count as usize;
     }
 }
 
@@ -170,6 +207,8 @@ impl ClapInstance {
     ) -> Result<ProcessOutput> {
         let num_samples = buffer.num_samples as u32;
 
+        // TODO(rt): InputEventList / OutputEventList still allocate their
+        // internal Vec<clap_event_*> per call. Pool them in a follow-up pass.
         let mut input_events = InputEventList::new();
         if !midi_events.is_empty() {
             input_events.add_midi_events(midi_events);
@@ -184,35 +223,50 @@ impl ClapInstance {
 
         let mut output_events = OutputEventList::new();
 
-        let mut input_ptrs: Vec<*mut T> =
+        // Caller-supplied channel pointers live on the stack (SmallVec) —
+        // no heap alloc for typical channel counts (≤ 16 per side).
+        let caller_inputs: smallvec::SmallVec<[*mut T; 16]> =
             buffer.inputs.iter().map(|s| s.as_ptr() as *mut T).collect();
-        let mut output_ptrs: Vec<*mut T> =
+        let caller_outputs: smallvec::SmallVec<[*mut T; 16]> =
             buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()).collect();
 
-        let n = buffer.num_samples;
-        let mut scratch_in = Vec::new();
-        let mut scratch_out = Vec::new();
-        let mut input_bufs = T::build_port_buffers(
-            &self.ports.inputs,
-            &mut input_ptrs,
-            &mut scratch_in,
-            n,
-        );
-        let mut output_bufs = T::build_port_buffers(
-            &self.ports.outputs,
-            &mut output_ptrs,
-            &mut scratch_out,
-            n,
-        );
+        // Populate the pre-allocated scratch in place. We need to read
+        // `self.ports` while mutating the sample-specific scratch; the two
+        // fields are disjoint, so we split the borrow through a raw pointer.
+        //
+        // SAFETY: `ports_ptr` and the `scratch` borrow come from disjoint
+        // fields of `*self`. We don't mutate `ports` and we don't reborrow
+        // `self` for the duration of the scratch mutation.
+        let ports_ptr: *const PortLayout = &self.ports;
+        let scratch = T::scratch_mut(self);
+        unsafe {
+            refill_port_buffers(
+                scratch,
+                &caller_inputs,
+                &caller_outputs,
+                &(*ports_ptr).inputs,
+                &(*ports_ptr).outputs,
+            );
+        }
 
-        self.do_process(
-            &mut input_bufs,
-            &mut output_bufs,
-            num_samples,
-            &input_events,
-            &mut output_events,
-            transport,
-        )
+        // Grab raw slice pointers into the scratch bufs; the vectors have
+        // frozen capacity so the pointers stay valid through `do_process`.
+        let audio_inputs_ptr: *mut [clap_audio_buffer] = scratch.input_bufs.as_mut_slice();
+        let audio_outputs_ptr: *mut [clap_audio_buffer] = scratch.output_bufs.as_mut_slice();
+
+        // SAFETY: `scratch.input_bufs` / `output_bufs` capacities were frozen
+        // in `activate()`; nothing on the do_process path resizes them, so
+        // the raw slices remain valid for the call's duration.
+        unsafe {
+            self.do_process(
+                &mut *audio_inputs_ptr,
+                &mut *audio_outputs_ptr,
+                num_samples,
+                &input_events,
+                &mut output_events,
+                transport,
+            )
+        }
     }
 
     fn do_process(
@@ -224,13 +278,9 @@ impl ClapInstance {
         output_events: &mut OutputEventList,
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutput> {
-        // Record the audio thread ID so is_audio_thread checks work correctly.
-        if let Ok(mut guard) = self.host_state.audio_thread_id.lock() {
-            *guard = Some(std::thread::current().id());
-        }
-
-        // start_processing() must be called after the audio thread ID is recorded,
-        // because plugins check is_audio_thread() inside start_processing().
+        // start_processing() publishes the audio-thread identity into
+        // host_state.audio_thread_id (once per start/stop cycle) — the RT
+        // do_process path is lock-free and allocation-free here.
         self.start_processing()?;
 
         let clap_transport = transport.map(build_clap_transport);

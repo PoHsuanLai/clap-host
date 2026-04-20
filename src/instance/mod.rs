@@ -23,7 +23,7 @@ use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_SUPPORTS_64BITS,
 };
 use clap_sys::plugin::clap_plugin;
-use config::{AudioConfig, LifecycleFlags, PortLayout};
+use config::{AudioConfig, LifecycleFlags, PortLayout, ProcessScratch};
 use descriptor::load_descriptor;
 use extensions::ExtensionCache;
 use handle::PluginHandle;
@@ -86,6 +86,9 @@ pub struct ClapInstance {
     pub(crate) audio: AudioConfig,
     pub(crate) ports: PortLayout,
     pub(crate) flags: LifecycleFlags,
+    /// Pre-allocated RT scratch, sized once in `activate()`.
+    pub(crate) scratch_f32: ProcessScratch<f32>,
+    pub(crate) scratch_f64: ProcessScratch<f64>,
 }
 
 // Safety: CLAP plugins are designed to be called from a single thread
@@ -225,6 +228,8 @@ impl ClapInstance {
             audio,
             ports,
             flags: LifecycleFlags::default(),
+            scratch_f32: ProcessScratch::new(),
+            scratch_f64: ProcessScratch::new(),
         })
     }
 
@@ -275,6 +280,21 @@ impl ClapInstance {
             });
         }
 
+        // Pre-allocate RT scratch now that the port layout is known. We
+        // size both f32 and f64 scratches so the RT path is allocation-free
+        // regardless of sample type the caller uses.
+        let input_total = self.ports.input_channel_total();
+        let output_total = self.ports.output_channel_total();
+        let max_frames = self.audio.max_frames as usize;
+        let num_in = self.ports.inputs.len();
+        let num_out = self.ports.outputs.len();
+        self.scratch_f32
+            .resize_for(input_total, output_total, max_frames, num_in, num_out);
+        if self.audio.supports_f64 {
+            self.scratch_f64
+                .resize_for(input_total, output_total, max_frames, num_in, num_out);
+        }
+
         self.flags.active = true;
         Ok(())
     }
@@ -301,6 +321,14 @@ impl ClapInstance {
             return Ok(());
         }
 
+        // Publish the current thread as the audio thread before the plugin's
+        // start_processing runs — plugins commonly call is_audio_thread from
+        // inside it. This is the only place we pay the Arc allocation; the
+        // per-buffer do_process path only reads the ArcSwapOption.
+        self.host_state
+            .audio_thread_id
+            .store(Some(std::sync::Arc::new(std::thread::current().id())));
+
         let plugin_ref = unsafe { self.plugin.as_ref() };
         if let Some(start_fn) = plugin_ref.start_processing {
             if !unsafe { start_fn(self.plugin.as_ptr()) } {
@@ -322,9 +350,7 @@ impl ClapInstance {
         if let Some(stop_fn) = plugin_ref.stop_processing {
             unsafe { stop_fn(self.plugin.as_ptr()) };
         }
-        if let Ok(mut guard) = self.host_state.audio_thread_id.lock() {
-            *guard = None;
-        }
+        self.host_state.audio_thread_id.store(None);
         self.flags.processing = false;
     }
 

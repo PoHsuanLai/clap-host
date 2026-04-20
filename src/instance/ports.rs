@@ -1,4 +1,5 @@
-//! Audio/note port methods for ClapInstance.
+//! Audio/note port enumeration, configuration, and the render / voice /
+//! surround / ambisonic extensions.
 
 use super::ClapInstance;
 use crate::types::{
@@ -26,6 +27,7 @@ use std::ptr;
 use crate::cstr_to_string;
 
 impl ClapInstance {
+    /// Number of input or output audio ports exposed by the plugin.
     pub fn audio_port_count(&self, is_input: bool) -> usize {
         if self.extensions.audio.ports.is_null() {
             return 0;
@@ -37,6 +39,8 @@ impl ClapInstance {
         }
     }
 
+    /// Metadata for the audio port at `index`, or `None` if the index is
+    /// invalid or the plugin does not implement the extension.
     pub fn audio_port_info(&self, index: usize, is_input: bool) -> Option<AudioPortInfo> {
         if self.extensions.audio.ports.is_null() {
             return None;
@@ -72,6 +76,7 @@ impl ClapInstance {
         })
     }
 
+    /// Total input channel count, summed across every input port.
     pub fn num_input_channels(&self) -> usize {
         let count = self.audio_port_count(true);
         (0..count)
@@ -80,6 +85,7 @@ impl ClapInstance {
             .sum()
     }
 
+    /// Total output channel count, summed across every output port.
     pub fn num_output_channels(&self) -> usize {
         let count = self.audio_port_count(false);
         (0..count)
@@ -88,6 +94,7 @@ impl ClapInstance {
             .sum()
     }
 
+    /// Number of input or output note (MIDI) ports.
     pub fn note_port_count(&self, is_input: bool) -> usize {
         if self.extensions.notes.ports.is_null() {
             return 0;
@@ -99,6 +106,7 @@ impl ClapInstance {
         }
     }
 
+    /// Metadata for the note port at `index`, including supported dialects.
     pub fn note_port_info(&self, index: usize, is_input: bool) -> Option<NotePortInfo> {
         if self.extensions.notes.ports.is_null() {
             return None;
@@ -129,6 +137,8 @@ impl ClapInstance {
         })
     }
 
+    /// Number of predefined port configurations
+    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`) the plugin offers.
     pub fn audio_port_config_count(&self) -> usize {
         if self.extensions.audio.ports_config.is_null() {
             return 0;
@@ -140,6 +150,7 @@ impl ClapInstance {
         }
     }
 
+    /// Describe the audio port configuration at `index`.
     pub fn get_audio_port_config(&self, index: usize) -> Option<AudioPortConfig> {
         if self.extensions.audio.ports_config.is_null() {
             return None;
@@ -164,6 +175,8 @@ impl ClapInstance {
         })
     }
 
+    /// Ask the plugin to switch to a previously reported port configuration.
+    /// Returns whether the plugin accepted the request.
     pub fn select_audio_port_config(&mut self, config_id: u32) -> bool {
         if self.extensions.audio.ports_config.is_null() {
             return false;
@@ -175,6 +188,7 @@ impl ClapInstance {
         }
     }
 
+    /// Plugin-reported processing latency in samples. 0 when unsupported.
     pub fn get_latency(&self) -> u32 {
         if self.extensions.system.latency.is_null() {
             return 0;
@@ -186,6 +200,8 @@ impl ClapInstance {
         }
     }
 
+    /// Plugin-reported tail length in samples (audio continues after input
+    /// stops — reverbs, delays). 0 when unsupported.
     pub fn get_tail(&self) -> u32 {
         if self.extensions.system.tail.is_null() {
             return 0;
@@ -197,6 +213,8 @@ impl ClapInstance {
         }
     }
 
+    /// Switch between real-time (`false`) and offline (`true`) rendering
+    /// modes per `CLAP_EXT_RENDER`. Returns whether the plugin accepted.
     pub fn set_render_mode(&mut self, offline: bool) -> bool {
         if self.extensions.system.render.is_null() {
             return false;
@@ -215,6 +233,8 @@ impl ClapInstance {
         }
     }
 
+    /// Whether the plugin requires a hard real-time environment (e.g. it
+    /// talks to hardware). Hosts should avoid running such plugins offline.
     pub fn has_hard_realtime_requirement(&self) -> bool {
         if self.extensions.system.render.is_null() {
             return false;
@@ -226,6 +246,7 @@ impl ClapInstance {
         }
     }
 
+    /// Voice-allocation information from `CLAP_EXT_VOICE_INFO`.
     pub fn get_voice_info(&self) -> Option<VoiceInfo> {
         if self.extensions.system.voice_info.is_null() {
             return None;
@@ -246,6 +267,8 @@ impl ClapInstance {
         }
     }
 
+    /// Number of custom note names (e.g. drum-kit labels) the plugin
+    /// exposes via `CLAP_EXT_NOTE_NAME`.
     pub fn note_name_count(&self) -> usize {
         if self.extensions.notes.name.is_null() {
             return 0;
@@ -257,6 +280,7 @@ impl ClapInstance {
         }
     }
 
+    /// Retrieve a single custom note name.
     pub fn get_note_name(&self, index: usize) -> Option<NoteName> {
         if self.extensions.notes.name.is_null() {
             return None;
@@ -275,6 +299,8 @@ impl ClapInstance {
         })
     }
 
+    /// Ask the plugin whether it could apply a set of port-configuration
+    /// requests without actually applying them.
     pub fn can_apply_audio_port_configuration(&self, requests: &[AudioPortConfigRequest]) -> bool {
         if self.extensions.audio.configurable_ports.is_null() {
             return false;
@@ -294,6 +320,8 @@ impl ClapInstance {
         }
     }
 
+    /// Apply a set of port-configuration requests via
+    /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success.
     pub fn apply_audio_port_configuration(&mut self, requests: &[AudioPortConfigRequest]) -> bool {
         if self.extensions.audio.configurable_ports.is_null() {
             return false;
@@ -313,6 +341,8 @@ impl ClapInstance {
         }
     }
 
+    /// Whether the plugin supports activating/deactivating ports while
+    /// processing is running.
     pub fn can_activate_audio_port_while_processing(&self) -> bool {
         if self.extensions.audio.ports_activation.is_null() {
             return false;
@@ -324,6 +354,8 @@ impl ClapInstance {
         }
     }
 
+    /// Activate or deactivate a single audio port.
+    /// `sample_size` is the bit depth (32 or 64).
     pub fn set_audio_port_active(
         &mut self,
         is_input: bool,
@@ -341,6 +373,8 @@ impl ClapInstance {
         }
     }
 
+    /// Ask the plugin to add a new port via the draft
+    /// `CLAP_EXT_EXTENSIBLE_AUDIO_PORTS`. Returns whether the plugin added it.
     pub fn add_audio_port(
         &mut self,
         is_input: bool,
@@ -363,6 +397,8 @@ impl ClapInstance {
         unsafe { add_fn(self.plugin.as_ptr(), is_input, channel_count, type_ptr, ptr::null()) }
     }
 
+    /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
+    /// removed the port.
     pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
         if self.extensions.audio.extensible_ports.is_null() {
             return false;
@@ -374,6 +410,8 @@ impl ClapInstance {
         }
     }
 
+    /// Ask whether the plugin can process the given ambisonic ordering +
+    /// normalization. Returns false when `CLAP_EXT_AMBISONIC` is unsupported.
     pub fn is_ambisonic_config_supported(&self, config: &AmbisonicConfig) -> bool {
         if self.extensions.audio.ambisonic.is_null() {
             return false;
@@ -399,6 +437,7 @@ impl ClapInstance {
         unsafe { f(self.plugin.as_ptr(), &clap_config) }
     }
 
+    /// Retrieve the ambisonic config currently used on a given port.
     pub fn get_ambisonic_config(&self, is_input: bool, port_index: u32) -> Option<AmbisonicConfig> {
         if self.extensions.audio.ambisonic.is_null() {
             return None;
@@ -426,6 +465,8 @@ impl ClapInstance {
         })
     }
 
+    /// Ask whether the plugin can process the given
+    /// [`SurroundChannel`]-bit channel mask (`CLAP_EXT_SURROUND`).
     pub fn is_surround_channel_mask_supported(&self, channel_mask: u64) -> bool {
         if self.extensions.audio.surround.is_null() {
             return false;
@@ -437,6 +478,8 @@ impl ClapInstance {
         }
     }
 
+    /// Retrieve the channel-to-speaker mapping the plugin uses on a port.
+    /// Unknown positions are dropped silently.
     pub fn get_surround_channel_map(
         &self,
         is_input: bool,
