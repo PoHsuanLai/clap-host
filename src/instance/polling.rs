@@ -7,8 +7,8 @@ use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
 use crate::types::{
-    ContextMenuItem, ContextMenuTarget, EditorSize, RemoteControlsPage, TrackInfo,
-    TransportRequest, TriggerInfo, WindowHandle,
+    ContextMenuItem, ContextMenuTarget, EditorCapabilities, EditorSize, RemoteControlsPage,
+    TrackInfo, TransportRequest, TriggerInfo, WindowHandle,
 };
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
@@ -114,6 +114,93 @@ impl ClapInstance {
         }
 
         Ok(size)
+    }
+
+    pub fn editor_capabilities(&self) -> EditorCapabilities {
+        if self.extensions.gui.gui.is_null() {
+            return EditorCapabilities::default();
+        }
+        let gui = unsafe { &*self.extensions.gui.gui };
+        let resizable = gui
+            .can_resize
+            .map(|f| unsafe { f(self.plugin.as_ptr()) })
+            .unwrap_or(false);
+        let mut caps = EditorCapabilities {
+            resizable,
+            can_resize_horizontally: resizable,
+            can_resize_vertically: resizable,
+            preserve_aspect_ratio: false,
+            aspect_ratio: None,
+        };
+        if let Some(get_hints) = gui.get_resize_hints {
+            let mut hints = clap_sys::ext::gui::clap_gui_resize_hints {
+                can_resize_horizontally: false,
+                can_resize_vertically: false,
+                preserve_aspect_ratio: false,
+                aspect_ratio_width: 0,
+                aspect_ratio_height: 0,
+            };
+            if unsafe { get_hints(self.plugin.as_ptr(), &mut hints) } {
+                caps.can_resize_horizontally = hints.can_resize_horizontally;
+                caps.can_resize_vertically = hints.can_resize_vertically;
+                caps.preserve_aspect_ratio = hints.preserve_aspect_ratio;
+                if hints.preserve_aspect_ratio
+                    && hints.aspect_ratio_width > 0
+                    && hints.aspect_ratio_height > 0
+                {
+                    caps.aspect_ratio =
+                        Some((hints.aspect_ratio_width, hints.aspect_ratio_height));
+                }
+            }
+        }
+        caps
+    }
+
+    /// Returns the snapped size the plugin applied.
+    pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
+        if self.extensions.gui.gui.is_null() {
+            return Err(ClapError::GuiError("No GUI extension".to_string()));
+        }
+        let gui = unsafe { &*self.extensions.gui.gui };
+        let mut w = requested.width;
+        let mut h = requested.height;
+        if let Some(adjust) = gui.adjust_size {
+            // false return just means "no snap to apply".
+            unsafe { adjust(self.plugin.as_ptr(), &mut w, &mut h) };
+        }
+        let set_size = gui
+            .set_size
+            .ok_or_else(|| ClapError::GuiError("set_size unsupported".to_string()))?;
+        if !unsafe { set_size(self.plugin.as_ptr(), w, h) } {
+            return Err(ClapError::GuiError("set_size refused".to_string()));
+        }
+        Ok(EditorSize {
+            width: w,
+            height: h,
+        })
+    }
+
+    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+        if !self
+            .host_state
+            .gui
+            .request_resize_pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return None;
+        }
+        Some(EditorSize {
+            width: self
+                .host_state
+                .gui
+                .request_resize_width
+                .load(std::sync::atomic::Ordering::Acquire),
+            height: self
+                .host_state
+                .gui
+                .request_resize_height
+                .load(std::sync::atomic::Ordering::Acquire),
+        })
     }
 
     /// Hide and destroy the plugin editor, if one was opened. Idempotent.

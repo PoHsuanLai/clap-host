@@ -752,10 +752,21 @@ pub struct UndoChange {
 }
 
 /// Size of the plugin's editor window in pixels.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditorSize {
     pub width: u32,
     pub height: u32,
+}
+
+/// Mirrors `clap_gui_resize_hints` plus a coarser `resizable` summary
+/// from `gui.can_resize`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EditorCapabilities {
+    pub resizable: bool,
+    pub can_resize_horizontally: bool,
+    pub can_resize_vertically: bool,
+    pub preserve_aspect_ratio: bool,
+    pub aspect_ratio: Option<(u32, u32)>,
 }
 
 /// Opaque handle to a native platform window, used to embed a plugin GUI.

@@ -47,7 +47,8 @@ pub use types::PosixFdFlags;
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortConfigRequest, AudioPortFlags, AudioPortInfo,
-    AudioPortType, Color, ContextMenuItem, ContextMenuTarget, EditorSize, MidiEvent, NoteDialect,
+    AudioPortType, Color, ContextMenuItem, ContextMenuTarget, EditorCapabilities, EditorSize,
+    MidiEvent, NoteDialect,
     NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName, NotePortInfo,
     ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint,
     ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel, TrackInfo,

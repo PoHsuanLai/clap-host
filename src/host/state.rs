@@ -59,6 +59,8 @@ pub struct GuiState {
     pub resize_hints_changed: AtomicBool,
     pub request_resize_width: AtomicU32,
     pub request_resize_height: AtomicU32,
+    /// Distinguishes a fresh request from stale width/height values.
+    pub request_resize_pending: AtomicBool,
 }
 
 impl GuiState {
@@ -68,6 +70,7 @@ impl GuiState {
             resize_hints_changed: AtomicBool::new(false),
             request_resize_width: AtomicU32::new(0),
             request_resize_height: AtomicU32::new(0),
+            request_resize_pending: AtomicBool::new(false),
         }
     }
 }

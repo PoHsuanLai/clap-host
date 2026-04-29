@@ -219,6 +219,10 @@ unsafe extern "C" fn host_gui_request_resize(
             .gui
             .request_resize_height
             .store(height, Ordering::Release);
+        state
+            .gui
+            .request_resize_pending
+            .store(true, Ordering::Release);
         true
     } else {
         false
