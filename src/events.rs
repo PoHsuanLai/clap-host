@@ -7,6 +7,7 @@ use crate::types::{
     MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
+use smallvec::SmallVec;
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
     clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
@@ -286,6 +287,13 @@ impl InputEventList {
         }
     }
 
+    /// Reserve heap capacity for at least `n` events. Off-RT only; call
+    /// once during plugin activation so steady-state `add_*` calls don't
+    /// touch the allocator. `clear()` keeps the reserved capacity.
+    pub fn reserve(&mut self, n: usize) {
+        self.events.reserve(n);
+    }
+
     /// Convert a [`MidiEvent`] to a [`ClapEvent`] and append it. UMP
     /// variants without a MIDI-1 form are silently skipped.
     pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
@@ -423,6 +431,13 @@ impl OutputEventList {
         std::mem::take(&mut self.events)
     }
 
+    /// Reserve heap capacity for at least `n` events. Off-RT only; call
+    /// once during plugin activation so the plugin's `try_push` callback
+    /// doesn't grow the inner Vec.
+    pub fn reserve(&mut self, n: usize) {
+        self.events.reserve(n);
+    }
+
     /// Extract MIDI events from the output as UMP [`MidiEvent`]s,
     /// dropping non-MIDI events.
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
@@ -432,30 +447,58 @@ impl OutputEventList {
             .collect()
     }
 
+    /// RT-safe variant of [`Self::to_midi_events`] that drains into a
+    /// caller-supplied pooled `SmallVec`. Clears `out` first; reuses
+    /// existing heap capacity.
+    pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
+        out.clear();
+        for e in &self.events {
+            if let Some(midi) = e.to_midi_event() {
+                out.push(midi);
+            }
+        }
+    }
+
     /// Extract parameter-value events into a [`ParameterChanges`] grouped
     /// by parameter ID.
     pub fn to_param_changes(&self) -> ParameterChanges {
         let mut changes = ParameterChanges::new();
-        let mut queues: std::collections::HashMap<u32, ParameterQueue> =
-            std::collections::HashMap::new();
+        self.fill_param_changes(&mut changes);
+        changes
+    }
+
+    /// RT-safe variant of [`Self::to_param_changes`] that drains into a
+    /// caller-supplied pooled `ParameterChanges`. Clears `out.queues` first
+    /// and groups events by `param_id` via a linear scan over the inline
+    /// `SmallVec<[ParameterQueue; 16]>` — at the single-digit-N typical of
+    /// plugin param emission, this beats a `HashMap` and avoids the
+    /// allocator entirely.
+    pub fn fill_param_changes(&self, out: &mut ParameterChanges) {
+        // Drop previous queues' points without freeing the queues' heap
+        // capacity: clear in place, then the queue order is rebuilt below.
+        for queue in &mut out.queues {
+            queue.points.clear();
+        }
+        out.queues.clear();
 
         for event in &self.events {
-            if let ClapEvent::ParamValue(e) = event {
-                queues
-                    .entry(e.param_id)
-                    .or_insert_with(|| ParameterQueue::new(e.param_id))
-                    .points
-                    .push(ParameterPoint {
-                        sample_offset: e.header.time as i32,
-                        value: e.value,
-                    });
+            let ClapEvent::ParamValue(e) = event else {
+                continue;
+            };
+            let point = ParameterPoint {
+                sample_offset: e.header.time as i32,
+                value: e.value,
+            };
+            // Linear scan: distinct param_ids per block are typically ≤8;
+            // a SmallVec scan stays in cache and is fully branch-predicted.
+            if let Some(queue) = out.queues.iter_mut().find(|q| q.param_id == e.param_id) {
+                queue.points.push(point);
+            } else {
+                let mut queue = ParameterQueue::new(e.param_id);
+                queue.points.push(point);
+                out.queues.push(queue);
             }
         }
-
-        for (_, queue) in queues {
-            changes.add_queue(queue);
-        }
-        changes
     }
 
     /// Extract note-expression events into the safe
@@ -463,37 +506,47 @@ impl OutputEventList {
     pub fn to_note_expressions(&self) -> Vec<NoteExpressionValue> {
         self.events
             .iter()
-            .filter_map(|e| {
-                if let ClapEvent::NoteExpression(ne) = e {
-                    let expression_type = match ne.expression_id {
-                        id if id == CLAP_NOTE_EXPRESSION_VOLUME => NoteExpressionType::Volume,
-                        id if id == CLAP_NOTE_EXPRESSION_PAN => NoteExpressionType::Pan,
-                        id if id == CLAP_NOTE_EXPRESSION_TUNING => NoteExpressionType::Tuning,
-                        id if id == CLAP_NOTE_EXPRESSION_VIBRATO => NoteExpressionType::Vibrato,
-                        id if id == CLAP_NOTE_EXPRESSION_BRIGHTNESS => {
-                            NoteExpressionType::Brightness
-                        }
-                        id if id == CLAP_NOTE_EXPRESSION_PRESSURE => NoteExpressionType::Pressure,
-                        id if id == CLAP_NOTE_EXPRESSION_EXPRESSION => {
-                            NoteExpressionType::Expression
-                        }
-                        _ => return None,
-                    };
-                    Some(NoteExpressionValue {
-                        sample_offset: ne.header.time as i32,
-                        note_id: ne.note_id,
-                        port_index: ne.port_index,
-                        channel: ne.channel,
-                        key: ne.key,
-                        expression_type,
-                        value: ne.value,
-                    })
-                } else {
-                    None
-                }
-            })
+            .filter_map(clap_event_to_note_expression)
             .collect()
     }
+
+    /// RT-safe variant of [`Self::to_note_expressions`] that drains into a
+    /// caller-supplied pooled `SmallVec`.
+    pub fn fill_note_expressions(&self, out: &mut SmallVec<[NoteExpressionValue; 16]>) {
+        out.clear();
+        for event in &self.events {
+            if let Some(ne) = clap_event_to_note_expression(event) {
+                out.push(ne);
+            }
+        }
+    }
+}
+
+/// Decode a single [`ClapEvent`] into a [`NoteExpressionValue`]. Returns
+/// `None` for unsupported expression ids or non-NoteExpression events.
+fn clap_event_to_note_expression(event: &ClapEvent) -> Option<NoteExpressionValue> {
+    let ClapEvent::NoteExpression(ne) = event else {
+        return None;
+    };
+    let expression_type = match ne.expression_id {
+        id if id == CLAP_NOTE_EXPRESSION_VOLUME => NoteExpressionType::Volume,
+        id if id == CLAP_NOTE_EXPRESSION_PAN => NoteExpressionType::Pan,
+        id if id == CLAP_NOTE_EXPRESSION_TUNING => NoteExpressionType::Tuning,
+        id if id == CLAP_NOTE_EXPRESSION_VIBRATO => NoteExpressionType::Vibrato,
+        id if id == CLAP_NOTE_EXPRESSION_BRIGHTNESS => NoteExpressionType::Brightness,
+        id if id == CLAP_NOTE_EXPRESSION_PRESSURE => NoteExpressionType::Pressure,
+        id if id == CLAP_NOTE_EXPRESSION_EXPRESSION => NoteExpressionType::Expression,
+        _ => return None,
+    };
+    Some(NoteExpressionValue {
+        sample_offset: ne.header.time as i32,
+        note_id: ne.note_id,
+        port_index: ne.port_index,
+        channel: ne.channel,
+        key: ne.key,
+        expression_type,
+        value: ne.value,
+    })
 }
 
 impl Default for OutputEventList {

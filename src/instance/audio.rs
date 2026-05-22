@@ -3,7 +3,7 @@
 use super::config::{PortLayout, ProcessScratch};
 use super::ClapInstance;
 use crate::error::{ClapError, Result};
-use crate::events::{InputEventList, OutputEventList};
+use crate::events::EventList;
 use crate::types::{AudioBuffer, MidiEvent, NoteExpressionValue, ParameterChanges, TransportInfo};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
@@ -16,11 +16,36 @@ use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{clap_process, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR};
 use std::ptr;
 
+/// Owned snapshot of the plugin's per-block output. Returned for
+/// non-RT consumers (tests, offline render) via
+/// [`ProcessOutputRef::to_owned`]; the hot path returns
+/// [`ProcessOutputRef`] borrowing the instance's pooled buffers instead.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessOutput {
     pub midi_events: Vec<MidiEvent>,
     pub param_changes: ParameterChanges,
     pub note_expressions: Vec<NoteExpressionValue>,
+}
+
+/// Borrowing view of the plugin's per-block output. Points into the
+/// `ClapInstance`'s pooled return-value buffers — valid until the next
+/// `process` call, which clears them in place. RT-safe.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessOutputRef<'a> {
+    pub midi_events: &'a [MidiEvent],
+    pub param_changes: &'a ParameterChanges,
+    pub note_expressions: &'a [NoteExpressionValue],
+}
+
+impl<'a> ProcessOutputRef<'a> {
+    /// Snapshot into an owned [`ProcessOutput`]. Allocates; off-RT only.
+    pub fn to_owned(self) -> ProcessOutput {
+        ProcessOutput {
+            midi_events: self.midi_events.to_vec(),
+            param_changes: self.param_changes.clone(),
+            note_expressions: self.note_expressions.to_vec(),
+        }
+    }
 }
 
 /// All inputs for a single process call. Use `..Default::default()` to fill
@@ -186,7 +211,7 @@ impl ClapInstance {
         &mut self,
         buffer: &mut AudioBuffer<T>,
         ctx: &ProcessContext<'_>,
-    ) -> Result<ProcessOutput> {
+    ) -> Result<ProcessOutputRef<'_>> {
         if T::requires_f64() && !self.audio.supports_f64 {
             return Err(ClapError::ProcessError(format!(
                 "Plugin '{}' does not support 64-bit audio processing \
@@ -206,24 +231,28 @@ impl ClapInstance {
         param_changes: &ParameterChanges,
         note_expressions: &[NoteExpressionValue],
         transport: Option<&TransportInfo>,
-    ) -> Result<ProcessOutput> {
+    ) -> Result<ProcessOutputRef<'_>> {
         let num_samples = buffer.num_samples as u32;
 
-        // TODO(rt): InputEventList / OutputEventList still allocate their
-        // internal Vec<clap_event_*> per call. Pool them in a follow-up pass.
-        let mut input_events = InputEventList::new();
+        // Refill the pooled input event list in place. `clear()` keeps the
+        // heap capacity reserved in `activate()`; the subsequent `add_*`
+        // calls push into that capacity without touching the allocator
+        // (steady state — first call past the reserve cap will allocate).
+        self.input_events.clear();
         if !midi_events.is_empty() {
-            input_events.add_midi_events(midi_events);
+            self.input_events.add_midi_events(midi_events);
         }
         if !param_changes.is_empty() {
-            input_events.add_param_changes(param_changes);
+            self.input_events.add_param_changes(param_changes);
         }
         if !note_expressions.is_empty() {
-            input_events.add_note_expressions(note_expressions);
+            self.input_events.add_note_expressions(note_expressions);
         }
-        input_events.sort_by_time();
+        self.input_events.sort_by_time();
 
-        let mut output_events = OutputEventList::new();
+        // Output list starts empty each block; the plugin's `try_push`
+        // callback fills it during `process_fn`.
+        self.output_events.clear();
 
         // Caller-supplied channel pointers live on the stack (SmallVec) —
         // no heap alloc for typical channel counts (≤ 16 per side).
@@ -264,8 +293,6 @@ impl ClapInstance {
                 &mut *audio_inputs_ptr,
                 &mut *audio_outputs_ptr,
                 num_samples,
-                &input_events,
-                &mut output_events,
                 transport,
             )
         }
@@ -276,10 +303,8 @@ impl ClapInstance {
         audio_inputs: &mut [clap_audio_buffer],
         audio_outputs: &mut [clap_audio_buffer],
         num_samples: u32,
-        input_events: &InputEventList,
-        output_events: &mut OutputEventList,
         transport: Option<&TransportInfo>,
-    ) -> Result<ProcessOutput> {
+    ) -> Result<ProcessOutputRef<'_>> {
         // start_processing() publishes the audio-thread identity into
         // host_state.audio_thread_id (once per start/stop cycle) — the RT
         // do_process path is lock-free and allocation-free here.
@@ -295,6 +320,13 @@ impl ClapInstance {
             .map(|t| (t.song_pos_seconds * self.audio.sample_rate) as i64)
             .unwrap_or(0);
 
+        // Build FFI pointers into the pooled event lists. The plugin's
+        // `process` runs synchronously and must not retain either pointer
+        // past return, so reading `&self.input_events` and
+        // `&mut self.output_events` through their raw forms here is sound.
+        let in_events = self.input_events.as_raw();
+        let out_events = self.output_events.as_raw_mut();
+
         let process_data = clap_process {
             steady_time,
             frames_count: num_samples,
@@ -303,8 +335,8 @@ impl ClapInstance {
             audio_outputs: audio_outputs.as_mut_ptr(),
             audio_inputs_count: audio_inputs.len() as u32,
             audio_outputs_count: audio_outputs.len() as u32,
-            in_events: input_events.as_raw(),
-            out_events: output_events.as_raw_mut(),
+            in_events,
+            out_events,
         };
 
         let plugin_ref = unsafe { self.plugin.as_ref() };
@@ -318,10 +350,19 @@ impl ClapInstance {
             return Err(ClapError::ProcessError("Plugin returned error".to_string()));
         }
 
-        Ok(ProcessOutput {
-            midi_events: output_events.to_midi_events(),
-            param_changes: output_events.to_param_changes(),
-            note_expressions: output_events.to_note_expressions(),
+        // Drain the plugin's output events into the pooled return buffers.
+        // Each `fill_*` clears its destination first; SmallVec/ParameterChanges
+        // keep their heap capacity reserved in `activate()`.
+        self.output_events.fill_midi_events(&mut self.out_midi);
+        self.output_events
+            .fill_param_changes(&mut self.out_param_changes);
+        self.output_events
+            .fill_note_expressions(&mut self.out_note_expressions);
+
+        Ok(ProcessOutputRef {
+            midi_events: &self.out_midi,
+            param_changes: &self.out_param_changes,
+            note_expressions: &self.out_note_expressions,
         })
     }
 }

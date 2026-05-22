@@ -13,12 +13,13 @@ mod resources;
 mod state;
 mod undo;
 
-pub use audio::{ClapSample, ProcessContext, ProcessOutput};
+pub use audio::{ClapSample, ProcessContext, ProcessOutput, ProcessOutputRef};
 pub use params::ParamMapping;
 
 use crate::error::{ClapError, LoadStage, Result};
+use crate::events::{InputEventList, OutputEventList};
 use crate::host::{ClapHost, HostState};
-use crate::types::PluginInfo;
+use crate::types::{MidiEvent, NoteExpressionValue, ParameterChanges, PluginInfo};
 use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_SUPPORTS_64BITS,
 };
@@ -27,9 +28,19 @@ use config::{AudioConfig, LifecycleFlags, PortLayout, ProcessScratch};
 use descriptor::load_descriptor;
 use extensions::ExtensionCache;
 use handle::PluginHandle;
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Heap reservation for pooled per-call event scratch on a `ClapInstance`.
+///
+/// Sized once at activation so steady-state `process` calls avoid the
+/// allocator.
+const EVENT_SCRATCH_CAPACITY: usize = 256;
+/// Heap reservation for the parameter-change queue list (one entry per
+/// distinct param_id emitted by the plugin per block).
+const PARAM_QUEUE_CAPACITY: usize = 16;
 
 /// Global registry for CLAP entry init/deinit lifecycle.
 ///
@@ -89,6 +100,17 @@ pub struct ClapInstance {
     /// Pre-allocated RT scratch, sized once in `activate()`.
     pub(crate) scratch_f32: ProcessScratch<f32>,
     pub(crate) scratch_f64: ProcessScratch<f64>,
+    /// Pooled event lists, owned by the instance. `InputEventList`
+    /// is refilled per call (UMP → CLAP conversion); `OutputEventList`
+    /// is filled by the plugin's `try_push` callback. Both are cleared
+    /// in place each block — heap capacity persists from `activate()`.
+    pub(crate) input_events: InputEventList,
+    pub(crate) output_events: OutputEventList,
+    /// Pooled return-value buffers. `process` writes converted events
+    /// into these so the call can return borrowed slices.
+    pub(crate) out_midi: SmallVec<[MidiEvent; 64]>,
+    pub(crate) out_param_changes: ParameterChanges,
+    pub(crate) out_note_expressions: SmallVec<[NoteExpressionValue; 16]>,
 }
 
 // Safety: CLAP plugins are designed to be called from a single thread
@@ -233,6 +255,11 @@ impl ClapInstance {
             flags: LifecycleFlags::default(),
             scratch_f32: ProcessScratch::new(),
             scratch_f64: ProcessScratch::new(),
+            input_events: InputEventList::new(),
+            output_events: OutputEventList::new(),
+            out_midi: SmallVec::new(),
+            out_param_changes: ParameterChanges::new(),
+            out_note_expressions: SmallVec::new(),
         })
     }
 
@@ -297,6 +324,16 @@ impl ClapInstance {
             self.scratch_f64
                 .resize_for(input_total, output_total, max_frames, num_in, num_out);
         }
+
+        // Pre-allocate event scratch so steady-state `process` calls never
+        // touch the allocator. EVENT_SCRATCH_CAPACITY covers typical
+        // per-block event counts (≤256). PARAM_QUEUE_CAPACITY covers
+        // distinct param_ids per block.
+        self.input_events.reserve(EVENT_SCRATCH_CAPACITY);
+        self.output_events.reserve(EVENT_SCRATCH_CAPACITY);
+        self.out_midi.reserve(EVENT_SCRATCH_CAPACITY);
+        self.out_param_changes.queues.reserve(PARAM_QUEUE_CAPACITY);
+        self.out_note_expressions.reserve(EVENT_SCRATCH_CAPACITY);
 
         self.flags.active = true;
         Ok(())
